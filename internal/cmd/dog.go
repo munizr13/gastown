@@ -1124,6 +1124,17 @@ func runDogDispatch(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	actionText := strings.Join([]string{p.Name, p.Path, p.RigName, workDesc}, " ")
+	if err := enforceGBrainWorkerLaunchDecision(gbrainWorkerLaunchDecisionRequest{
+		TargetID:     workDesc,
+		ActionCode:   gbrainWorkerLaunchActionCodeFromText(actionText),
+		WorkerSystem: "gastown",
+		WorkerRole:   fmt.Sprintf("deacon/dogs/%s", targetDog.Name),
+		ActionText:   actionText,
+	}); err != nil {
+		return err
+	}
+
 	// Ensure dog has an agent bead before sending mail.
 	// Dogs created before agent beads were added, or whose bead creation
 	// failed silently, won't have one. The mail router requires agent beads
@@ -1274,4 +1285,3 @@ func ifStr(cond bool, ifTrue, ifFalse string) string {
 	}
 	return ifFalse
 }
-

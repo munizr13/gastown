@@ -165,6 +165,30 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 		return result, fmt.Errorf("bead %s is deferred (use --force to override)", params.BeadID)
 	}
 
+	actionCode := gbrainWorkerLaunchActionCodeFromBead(
+		info,
+		params.BeadID,
+		params.RigName,
+		params.FormulaName,
+		params.Args,
+		strings.Join(params.Vars, " "),
+		params.Mode,
+		params.Agent,
+	)
+	workerRole := params.Agent
+	if workerRole == "" && params.RigName != "" {
+		workerRole = fmt.Sprintf("%s/polecats/_", params.RigName)
+	}
+	if err := enforceGBrainWorkerLaunchDecision(gbrainWorkerLaunchDecisionRequest{
+		TargetID:     params.BeadID,
+		ActionCode:   actionCode,
+		WorkerSystem: "gastown",
+		WorkerRole:   workerRole,
+	}); err != nil {
+		result.ErrMsg = err.Error()
+		return result, err
+	}
+
 	if params.RigName != "" {
 		if err := verifyBeadExistsInTargetRigDatabase(params.BeadID, params.RigName, townRoot); err != nil {
 			result.ErrMsg = err.Error()

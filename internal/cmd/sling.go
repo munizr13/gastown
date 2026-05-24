@@ -691,6 +691,31 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 		}
 	}
 
+	var target string
+	if len(args) > 1 {
+		target = args[1]
+	}
+	if !slingDryRun {
+		actionCode := gbrainWorkerLaunchActionCodeFromBead(
+			info,
+			beadID,
+			target,
+			formulaName,
+			slingFormula,
+			slingArgs,
+			slingMessage,
+			slingSubject,
+		)
+		if err := enforceGBrainWorkerLaunchDecision(gbrainWorkerLaunchDecisionRequest{
+			TargetID:     beadID,
+			ActionCode:   actionCode,
+			WorkerSystem: "gastown",
+			WorkerRole:   defaultString(target, "self"),
+		}); err != nil {
+			return err
+		}
+	}
+
 	// TODO(scheduler-unify): Migrate single-sling rig dispatch to use executeSling().
 	// The inline logic below duplicates executeSling's 12-step flow. Batch sling
 	// and scheduler dispatch already use the unified path. Single-sling is deferred
@@ -701,10 +726,6 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 	// Resolve target agent using shared dispatch logic.
 	// Note: args[1] == args[len(args)-1] here because batch mode (len(args) > 2
 	// with rig last arg) exits at line 234. The only remaining case is len(args) <= 2.
-	var target string
-	if len(args) > 1 {
-		target = args[1]
-	}
 	resolved, err := resolveTarget(target, ResolveTargetOptions{
 		DryRun:       slingDryRun,
 		Force:        force,
