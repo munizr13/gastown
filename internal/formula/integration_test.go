@@ -6,6 +6,39 @@ import (
 	"testing"
 )
 
+func TestIdeaToPlanHumanGateUsesSupportedEscalateFlags(t *testing.T) {
+	data, err := formulasFS.ReadFile("formulas/mol-idea-to-plan.formula.toml")
+	if err != nil {
+		t.Fatalf("reading mol-idea-to-plan formula: %v", err)
+	}
+
+	content := string(data)
+	required := []string{
+		"Mayor prepares a CTO approval packet; CTO asks you and relays answer",
+		"Mayor → CTO → human → CTO → Mayor/Gastown",
+		"gt escalate \"CLARIFY: {{problem}}\"",
+		"--source \"mayor/\"",
+		"--stdin < .prd-reviews/{{review_id}}/human-clarification-packet.md",
+		"--related <bead-id>",
+	}
+	for _, want := range required {
+		if !strings.Contains(content, want) {
+			t.Fatalf("mol-idea-to-plan human gate missing %q", want)
+		}
+	}
+
+	forbidden := []string{
+		"--fingerprint",
+		"same fingerprint",
+		"Wait for the human to respond in this conversation",
+	}
+	for _, bad := range forbidden {
+		if strings.Contains(content, bad) {
+			t.Fatalf("mol-idea-to-plan human gate contains unsupported/stale text %q", bad)
+		}
+	}
+}
+
 // TestParseRealFormulas tests parsing all embedded formula files.
 // Composition formulas (extends/compose) are now also resolved and validated.
 func TestParseRealFormulas(t *testing.T) {

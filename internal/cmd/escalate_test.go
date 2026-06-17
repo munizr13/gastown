@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -95,7 +97,7 @@ func TestExtractMailTargetsFromActions(t *testing.T) {
 
 func TestExecuteExternalActionsReportsWarningsAndFailures(t *testing.T) {
 	townRoot := t.TempDir()
-	statuses := executeExternalActions([]string{"email:human", "log"}, &config.EscalationConfig{}, "hq-esc1", "high", "desc", townRoot)
+	statuses := executeExternalActions([]string{"email:human", "log"}, &config.EscalationConfig{}, "hq-esc1", "high", "desc", "", townRoot)
 	if len(statuses) != 2 {
 		t.Fatalf("expected 2 statuses, got %d", len(statuses))
 	}
@@ -459,8 +461,13 @@ func TestExecuteExternalActions(t *testing.T) {
 			cfg:     &config.EscalationConfig{},
 		},
 		{
+			name:    "openclaw webhook without config",
+			actions: []string{"webhook:openclaw"},
+			cfg:     &config.EscalationConfig{},
+		},
+		{
 			name:    "all external actions combined",
-			actions: []string{"email:human", "sms:human", "slack", "log"},
+			actions: []string{"email:human", "sms:human", "slack", "webhook:openclaw", "log"},
 			cfg: &config.EscalationConfig{
 				Contacts: config.EscalationContacts{
 					HumanEmail:   "test@example.com",
@@ -480,8 +487,60 @@ func TestExecuteExternalActions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
 			// Should not panic
-			executeExternalActions(tt.actions, tt.cfg, "hq-test", "high", "Test escalation", tmpDir)
+			executeExternalActions(tt.actions, tt.cfg, "hq-test", "high", "Test escalation", "Escalation packet", tmpDir)
 		})
+	}
+}
+
+func TestSendEscalationOpenClaw(t *testing.T) {
+	var gotAuth string
+	var gotPayload map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if ct := r.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+			t.Errorf("Content-Type = %q, want application/json", ct)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotPayload); err != nil {
+			t.Errorf("decode payload: %v", err)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	cfg := &config.EscalationConfig{
+		Contacts: config.EscalationContacts{
+			OpenClawWebhook: server.URL,
+			OpenClawToken:   "hook-token",
+		},
+	}
+
+	reason := "## High-Level Picture\nApproval packet body.\n\n## What Rodrigo Is Approving\nB1-B7."
+	if err := sendEscalationOpenClaw(cfg, "hq-wisp-test", "high", "CLARIFY: project gate", reason); err != nil {
+		t.Fatalf("sendEscalationOpenClaw returned error: %v", err)
+	}
+	if gotAuth != "Bearer hook-token" {
+		t.Errorf("Authorization = %q, want bearer token", gotAuth)
+	}
+	if gotPayload["id"] != "hq-wisp-test" {
+		t.Errorf("payload id = %q", gotPayload["id"])
+	}
+	if gotPayload["severity"] != "high" {
+		t.Errorf("payload severity = %q", gotPayload["severity"])
+	}
+	if gotPayload["subject"] != "CLARIFY: project gate" {
+		t.Errorf("payload subject = %q", gotPayload["subject"])
+	}
+	if !strings.Contains(gotPayload["body"], "## High-Level Picture") {
+		t.Errorf("payload body missing approval packet: %q", gotPayload["body"])
+	}
+	if !strings.Contains(gotPayload["body"], "B1-B7") {
+		t.Errorf("payload body missing approval details: %q", gotPayload["body"])
+	}
+	if !strings.Contains(gotPayload["body"], "gt escalate ack hq-wisp-test") {
+		t.Errorf("payload body missing ack command: %q", gotPayload["body"])
 	}
 }
 

@@ -44,8 +44,8 @@ WORKFLOW:
 
 CONFIGURATION:
   Routing is configured in ~/gt/settings/escalation.json:
-  - routes: Map severity to action lists (bead, mail:mayor, email:human, sms:human)
-  - contacts: Human email/SMS for external notifications
+  - routes: Map severity to action lists (bead, mail:mayor, webhook:openclaw, email:human, sms:human)
+  - contacts: Human email/SMS and OpenClaw hook details for external notifications
   - stale_threshold: When unacked escalations are re-escalated (default: 4h)
   - max_reescalations: How many times to bump severity (default: 2)
 
