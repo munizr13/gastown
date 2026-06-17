@@ -761,8 +761,19 @@ Output:
 - Kick off agent swarm: gt sling <first-bead-id> <rig>
 ```
 
+**7. Write bead creation evidence:**
+
+Create `.gastown/launch-gate/beads-created.md` with:
+- the tracking epic ID
+- every created task bead ID and title
+- dependency edges added
+- output from `bd blocked`
+- output from `bd ready`
+
+This file is required by Gastown's from-scratch launch gate.
+
 **Exit criteria:** All plan tasks exist as beads. Dependencies are correctly wired.
-Epic created. Human notified."""
+Epic created. Human notified. `.gastown/launch-gate/beads-created.md` exists."""
 
 [[steps]]
 id = "verify-beads-pass-1"
@@ -821,7 +832,15 @@ bd dep add <new-bead> <dependency-bead>
 **5. Report:**
 Log what you found and created. If no gaps: say so explicitly.
 
-**Exit criteria:** All plan items have corresponding beads after this pass."""
+Also write `.gastown/launch-gate/verify-beads-pass-1.md` with:
+- plan sections checked
+- gaps found
+- beads created or updated
+- dependency changes
+- remaining concerns
+
+**Exit criteria:** All plan items have corresponding beads after this pass.
+`.gastown/launch-gate/verify-beads-pass-1.md` exists."""
 
 [[steps]]
 id = "verify-beads-pass-2"
@@ -850,7 +869,11 @@ requirements that only become visible after the first pass filled gaps.
 - Do any beads have descriptions that are too vague to be actionable?
   If so, update them with specifics from the plan.
 
-**Exit criteria:** Second pass complete. Any new gaps filled."""
+Write `.gastown/launch-gate/verify-beads-pass-2.md` with the same evidence
+structure as pass 1.
+
+**Exit criteria:** Second pass complete. Any new gaps filled.
+`.gastown/launch-gate/verify-beads-pass-2.md` exists."""
 
 [[steps]]
 id = "verify-beads-pass-3"
@@ -896,8 +919,68 @@ Output:
 <HIGH if 0 gaps in pass 3, MEDIUM if 1-2 gaps found in pass 3>
 ```
 
+**5. Write final verification artifact:**
+
+Create `.gastown/launch-gate/verify-beads-pass-3.md` with:
+- final plan-to-beads comparison
+- final gap count
+- random bead spot-checks
+- `bd blocked`, `bd ready`, and `bd stats` output
+- final confidence
+
+If final gap count is not zero, do not write an allow receipt. Fix the gaps and
+repeat this pass first.
+
+**6. Write the launch-gate receipt:**
+
+After final gap count is zero, create `.gastown/launch-gate/receipt.json`.
+Use this schema exactly, replacing placeholders with real IDs and counts:
+
+```json
+{
+  "contract": "gastown.from_scratch_launch_gate.receipt.v1",
+  "decision": "allow",
+  "approved_by": "mayor",
+  "paperclip_issue": "",
+  "gastown_bead": "<tracking-epic-or-planning-bead-id>",
+  "approved_prd": {
+    "review_id": "{{review_id}}",
+    "draft_path": ".prd-reviews/{{review_id}}/prd-draft.md",
+    "review_path": ".prd-reviews/{{review_id}}/prd-review.md",
+    "human_clarification": true
+  },
+  "design": {
+    "design_id": "<design-id>",
+    "design_doc": ".designs/<design-id>/design-doc.md"
+  },
+  "plan_reviews": {
+    "prd_alignment": [
+      ".plan-reviews/{{review_id}}/prd-align-round-1.md",
+      ".plan-reviews/{{review_id}}/prd-align-round-2.md",
+      ".plan-reviews/{{review_id}}/prd-align-round-3.md"
+    ],
+    "plan_review": [
+      ".plan-reviews/{{review_id}}/review-round-1.md",
+      ".plan-reviews/{{review_id}}/review-round-2.md",
+      ".plan-reviews/{{review_id}}/review-round-3.md"
+    ]
+  },
+  "beads": {
+    "created_artifact": ".gastown/launch-gate/beads-created.md",
+    "epic_id": "<tracking-epic-id>",
+    "created_count": <task-bead-count>,
+    "verification_passes": [
+      {"pass": 1, "artifact": ".gastown/launch-gate/verify-beads-pass-1.md"},
+      {"pass": 2, "artifact": ".gastown/launch-gate/verify-beads-pass-2.md"},
+      {"pass": 3, "artifact": ".gastown/launch-gate/verify-beads-pass-3.md"}
+    ]
+  }
+}
+```
+
 **Exit criteria:** Three passes complete. Zero gaps in final pass. Human notified
-with coverage report."""
+with coverage report. `.gastown/launch-gate/receipt.json` exists and points to
+all PRD, design, review, bead creation, and bead verification artifacts."""
 
 [vars]
 [vars.review_id]

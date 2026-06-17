@@ -126,6 +126,17 @@ func scheduleBead(beadID, rigName string, opts ScheduleOptions) error {
 		return fmt.Errorf("bead %s is already %s to %s\nUse --force to override", beadID, info.Status, info.Assignee)
 	}
 
+	if err := enforceFromScratchLaunchGate(townRoot, rigName, beadID, info, launchGateDispatchOptions{
+		FormulaName: opts.Formula,
+		ReviewOnly:  opts.ReviewOnly,
+		Args:        opts.Args,
+		Vars:        opts.Vars,
+		Agent:       opts.Agent,
+		Target:      rigName,
+	}); err != nil {
+		return err
+	}
+
 	if opts.Formula != "" {
 		if err := verifyFormulaExists(opts.Formula); err != nil {
 			return fmt.Errorf("formula %q not found: %w", opts.Formula, err)

@@ -21,6 +21,7 @@ const (
 	envGBrainWorkerLaunchDecisionLane       = "GT_GBRAIN_WORKER_LAUNCH_DECISION_LANE"
 	envGBrainWorkerLaunchDecisionTimeoutMS  = "GT_GBRAIN_WORKER_LAUNCH_DECISION_TIMEOUT_MS"
 	envGBrainWorkerLaunchDecisionActionCode = "GT_GBRAIN_WORKER_LAUNCH_ACTION_CODE"
+	envGBrainWorkerLaunchDecisionCompanyID  = "GT_GBRAIN_WORKER_LAUNCH_COMPANY_ID"
 )
 
 const (
@@ -31,6 +32,7 @@ const (
 
 type gbrainWorkerLaunchDecisionRequest struct {
 	TargetID     string
+	CompanyID    string
 	ActionCode   string
 	WorkerSystem string
 	WorkerRole   string
@@ -41,6 +43,7 @@ type gbrainWorkerLaunchDecisionResponse struct {
 	Contract string `json:"contract"`
 	Request  struct {
 		TargetID     string `json:"target_id"`
+		CompanyID    string `json:"company_id"`
 		Lane         string `json:"lane"`
 		ActionCode   string `json:"action_code"`
 		WorkerSystem string `json:"worker_system"`
@@ -61,6 +64,7 @@ type gbrainWorkerLaunchDecisionResponse struct {
 
 type gbrainWorkerLaunchDecisionExpectedRequest struct {
 	TargetID     string
+	CompanyID    string
 	Lane         string
 	ActionCode   string
 	WorkerSystem string
@@ -95,12 +99,28 @@ func gbrainWorkerLaunchDecisionEndpoint() string {
 	return base + "/api/gbrain/worker-launch-decision"
 }
 
+func normalizeGBrainWorkerLaunchDecisionLane(lane string) string {
+	normalized := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(lane), "-", "_"))
+	switch normalized {
+	case "full", "full_autonomy", "autonomous":
+		return "full_autonomy"
+	case "assist", "assisted", "assisted_autonomy", "operator_assisted", "supervised":
+		return "assisted_autonomy"
+	default:
+		return defaultGBrainWorkerLaunchDecisionLane
+	}
+}
+
 func gbrainWorkerLaunchDecisionLane() string {
 	lane := strings.TrimSpace(os.Getenv(envGBrainWorkerLaunchDecisionLane))
 	if lane == "" {
 		return defaultGBrainWorkerLaunchDecisionLane
 	}
-	return lane
+	return normalizeGBrainWorkerLaunchDecisionLane(lane)
+}
+
+func gbrainWorkerLaunchDecisionCompanyID() string {
+	return strings.TrimSpace(os.Getenv(envGBrainWorkerLaunchDecisionCompanyID))
 }
 
 func gbrainWorkerLaunchDecisionTimeout() time.Duration {
@@ -194,6 +214,7 @@ func gbrainWorkerLaunchDecisionRequestMismatches(decision gbrainWorkerLaunchDeci
 		expected string
 	}{
 		{name: "target_id", actual: decision.Request.TargetID, expected: expected.TargetID},
+		{name: "company_id", actual: decision.Request.CompanyID, expected: expected.CompanyID},
 		{name: "lane", actual: decision.Request.Lane, expected: expected.Lane},
 		{name: "action_code", actual: decision.Request.ActionCode, expected: expected.ActionCode},
 		{name: "worker_system", actual: decision.Request.WorkerSystem, expected: expected.WorkerSystem},
@@ -226,6 +247,13 @@ func enforceGBrainWorkerLaunchDecision(req gbrainWorkerLaunchDecisionRequest) er
 	if req.TargetID != "" {
 		query.Set("target_id", req.TargetID)
 		query.Set("ops_work_id", req.TargetID)
+	}
+	companyID := strings.TrimSpace(req.CompanyID)
+	if companyID == "" {
+		companyID = gbrainWorkerLaunchDecisionCompanyID()
+	}
+	if companyID != "" {
+		query.Set("company_id", companyID)
 	}
 	lane := gbrainWorkerLaunchDecisionLane()
 	query.Set("lane", lane)
@@ -278,6 +306,7 @@ func enforceGBrainWorkerLaunchDecision(req gbrainWorkerLaunchDecisionRequest) er
 	}
 	mismatches := gbrainWorkerLaunchDecisionRequestMismatches(decision, gbrainWorkerLaunchDecisionExpectedRequest{
 		TargetID:     req.TargetID,
+		CompanyID:    companyID,
 		Lane:         lane,
 		ActionCode:   actionCode,
 		WorkerSystem: req.WorkerSystem,

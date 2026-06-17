@@ -695,6 +695,16 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 	if len(args) > 1 {
 		target = args[1]
 	}
+	if err := enforceFromScratchLaunchGateForTarget(townRoot, target, beadID, info, launchGateDispatchOptions{
+		FormulaName: formulaName,
+		ReviewOnly:  slingReviewOnly,
+		Args:        slingArgs,
+		Vars:        slingVars,
+		Agent:       slingAgent,
+		Target:      target,
+	}); err != nil {
+		return err
+	}
 	if !slingDryRun {
 		actionCode := gbrainWorkerLaunchActionCodeFromBead(
 			info,

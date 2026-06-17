@@ -34,15 +34,20 @@ func TestGBrainWorkerLaunchDecisionDisabledDoesNotCallEndpoint(t *testing.T) {
 
 func TestGBrainWorkerLaunchDecisionAllowsRepairAction(t *testing.T) {
 	var seenActionCode string
+	var seenCompanyID string
+	var seenLane string
 	var seenWorkerSystem string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seenActionCode = r.URL.Query().Get("action_code")
+		seenCompanyID = r.URL.Query().Get("company_id")
+		seenLane = r.URL.Query().Get("lane")
 		seenWorkerSystem = r.URL.Query().Get("worker_system")
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{
 			"contract":"gbrain.worker_launch_decision.v1",
 			"request":{
 				"target_id":%q,
+				"company_id":%q,
 				"lane":%q,
 				"action_code":%q,
 				"worker_system":%q,
@@ -56,6 +61,7 @@ func TestGBrainWorkerLaunchDecisionAllowsRepairAction(t *testing.T) {
 			}
 		}`,
 			r.URL.Query().Get("target_id"),
+			r.URL.Query().Get("company_id"),
 			r.URL.Query().Get("lane"),
 			r.URL.Query().Get("action_code"),
 			r.URL.Query().Get("worker_system"),
@@ -66,6 +72,8 @@ func TestGBrainWorkerLaunchDecisionAllowsRepairAction(t *testing.T) {
 
 	t.Setenv(envGBrainWorkerLaunchDecisionEnabled, "1")
 	t.Setenv(envGBrainWorkerLaunchDecisionURL, server.URL)
+	t.Setenv(envGBrainWorkerLaunchDecisionCompanyID, "cmp_1")
+	t.Setenv(envGBrainWorkerLaunchDecisionLane, "supervised")
 
 	err := enforceGBrainWorkerLaunchDecision(gbrainWorkerLaunchDecisionRequest{
 		TargetID:     "gt-123",
@@ -78,6 +86,12 @@ func TestGBrainWorkerLaunchDecisionAllowsRepairAction(t *testing.T) {
 	}
 	if seenActionCode != "REPAIR_GBRAIN_WORKER_MEMORY_COVERAGE" {
 		t.Fatalf("action_code = %q, want REPAIR_GBRAIN_WORKER_MEMORY_COVERAGE", seenActionCode)
+	}
+	if seenCompanyID != "cmp_1" {
+		t.Fatalf("company_id = %q, want cmp_1", seenCompanyID)
+	}
+	if seenLane != "assisted_autonomy" {
+		t.Fatalf("lane = %q, want assisted_autonomy", seenLane)
 	}
 	if seenWorkerSystem != "gastown" {
 		t.Fatalf("worker_system = %q, want gastown", seenWorkerSystem)
@@ -229,6 +243,52 @@ func TestGBrainWorkerLaunchDecisionMismatchedResponseFailsClosed(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q does not include %q", err.Error(), want)
 		}
+	}
+}
+
+func TestGBrainWorkerLaunchDecisionCrossCompanyResponseFailsClosed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{
+			"contract":"gbrain.worker_launch_decision.v1",
+			"request":{
+				"target_id":%q,
+				"company_id":"other_company",
+				"lane":%q,
+				"action_code":%q,
+				"worker_system":%q,
+				"worker_role":%q
+			},
+			"decision":{
+				"allowed":true,
+				"state":"repair_admitted",
+				"policy_mode":"repair_only"
+			}
+		}`,
+			r.URL.Query().Get("target_id"),
+			r.URL.Query().Get("lane"),
+			r.URL.Query().Get("action_code"),
+			r.URL.Query().Get("worker_system"),
+			r.URL.Query().Get("worker_role"),
+		)
+	}))
+	defer server.Close()
+
+	t.Setenv(envGBrainWorkerLaunchDecisionEnabled, "1")
+	t.Setenv(envGBrainWorkerLaunchDecisionURL, server.URL)
+	t.Setenv(envGBrainWorkerLaunchDecisionCompanyID, "cmp_1")
+
+	err := enforceGBrainWorkerLaunchDecision(gbrainWorkerLaunchDecisionRequest{
+		TargetID:     "gt-123",
+		ActionCode:   "REPAIR_GBRAIN_WORKER_MEMORY_COVERAGE",
+		WorkerSystem: "gastown",
+		WorkerRole:   "gastown/polecats/_",
+	})
+	if err == nil {
+		t.Fatalf("expected cross-company response to fail closed")
+	}
+	if !strings.Contains(err.Error(), "company_id: expected cmp_1, got other_company") {
+		t.Fatalf("error %q does not include company mismatch", err.Error())
 	}
 }
 

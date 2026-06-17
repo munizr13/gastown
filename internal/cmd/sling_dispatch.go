@@ -165,6 +165,21 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 		return result, fmt.Errorf("bead %s is deferred (use --force to override)", params.BeadID)
 	}
 
+	if params.RigName != "" {
+		if err := enforceFromScratchLaunchGate(townRoot, params.RigName, params.BeadID, info, launchGateDispatchOptions{
+			FormulaName: params.FormulaName,
+			ReviewOnly:  params.ReviewOnly,
+			Args:        params.Args,
+			Vars:        params.Vars,
+			Mode:        params.Mode,
+			Agent:       params.Agent,
+			Target:      params.RigName,
+		}); err != nil {
+			result.ErrMsg = err.Error()
+			return result, err
+		}
+	}
+
 	actionCode := gbrainWorkerLaunchActionCodeFromBead(
 		info,
 		params.BeadID,

@@ -119,6 +119,16 @@ func runSlingFormula(ctx context.Context, args []string) error {
 	if len(args) > 1 {
 		target = args[1]
 	}
+	if err := enforceFromScratchLaunchGateForTarget(townRoot, target, formulaName, nil, launchGateDispatchOptions{
+		FormulaName: formulaName,
+		ReviewOnly:  slingReviewOnly,
+		Args:        slingArgs,
+		Vars:        slingVars,
+		Agent:       slingAgent,
+		Target:      target,
+	}); err != nil {
+		return err
+	}
 	resolved, err := resolveTarget(target, ResolveTargetOptions{
 		DryRun:   slingDryRun,
 		Force:    slingForce,
