@@ -2491,36 +2491,44 @@ func getIssueDetailsBatch(issueIDs []string) map[string]*issueDetails {
 		return result
 	}
 
-	// Build args: bd show id1 id2 id3 ... --json
-	args := append([]string{"show"}, issueIDs...)
-	args = append(args, "--json")
-
-	// Run from town root so bd's prefix routing (routes.jsonl) can dispatch
-	// to the correct rig database for cross-rig bead lookups. (GH#2960)
-	townRoot, _ := workspace.FindFromCwdOrError()
-	bdc := BdCmd(args...).Stderr(io.Discard)
-	if townRoot != "" {
-		bdc.Dir(townRoot).WithRouting()
-	}
-	out, err := bdc.Output()
-	if err != nil {
-		// Batch failed - fall back to individual lookups for robustness
-		// This handles cases where some IDs are invalid/missing
-		for _, id := range issueIDs {
-			if details := getIssueDetails(id); details != nil {
-				result[id] = details
-			}
+	idsByDir := make(map[string][]string)
+	dirOrder := make([]string, 0)
+	for _, id := range issueIDs {
+		dir := resolveBeadDir(id)
+		if _, ok := idsByDir[dir]; !ok {
+			dirOrder = append(dirOrder, dir)
 		}
-		return result
+		idsByDir[dir] = append(idsByDir[dir], id)
 	}
 
-	var issues []issueDetailsJSON
-	if err := json.Unmarshal(out, &issues); err != nil {
-		return result
-	}
+	for _, dir := range dirOrder {
+		ids := idsByDir[dir]
+		args := append([]string{"show"}, ids...)
+		args = append(args, "--json")
 
-	for _, issue := range issues {
-		result[issue.ID] = issue.toIssueDetails()
+		// bd no longer routes across rig databases itself. Resolve each tracked
+		// bead to its owning .beads directory, then pin bd there. This keeps
+		// convoy status/check from treating closed cross-rig beads as unknown.
+		out, err := BdCmd(args...).Dir(dir).StripBeadsDir().Stderr(io.Discard).Output()
+		if err != nil {
+			// Batch failed - fall back to individual lookups for robustness.
+			// This handles cases where some IDs are invalid/missing.
+			for _, id := range ids {
+				if details := getIssueDetails(id); details != nil {
+					result[id] = details
+				}
+			}
+			continue
+		}
+
+		var issues []issueDetailsJSON
+		if err := json.Unmarshal(out, &issues); err != nil {
+			continue
+		}
+
+		for _, issue := range issues {
+			result[issue.ID] = issue.toIssueDetails()
+		}
 	}
 
 	return result
@@ -2529,16 +2537,13 @@ func getIssueDetailsBatch(issueIDs []string) map[string]*issueDetails {
 // getIssueDetails fetches issue details by trying to show it via bd.
 // Prefer getIssueDetailsBatch for multiple issues to avoid N+1 subprocess calls.
 func getIssueDetails(issueID string) *issueDetails {
-	// Use bd show with routing - resolve from town root so bd's prefix
-	// routing (routes.jsonl) can dispatch to the correct rig database.
-	// Without Dir + StripBeadsDir, bd inherits CWD/BEADS_DIR which may
-	// point to a rig that doesn't contain the target bead. (GH#2960)
-	townRoot, _ := workspace.FindFromCwdOrError()
-	bdc := BdCmd("show", issueID, "--json").Stderr(io.Discard)
-	if townRoot != "" {
-		bdc.Dir(townRoot).WithRouting()
-	}
-	out, err := bdc.Output()
+	// bd no longer routes across rig databases itself; resolve the target
+	// database in gt and pin bd to that directory.
+	out, err := BdCmd("show", issueID, "--json").
+		Dir(resolveBeadDir(issueID)).
+		StripBeadsDir().
+		Stderr(io.Discard).
+		Output()
 	if err != nil {
 		return nil
 	}

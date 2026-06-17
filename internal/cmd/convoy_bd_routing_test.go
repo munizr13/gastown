@@ -215,6 +215,81 @@ esac
 	}
 }
 
+func TestGetTrackedIssues_ResolvesTrackedBeadsToOwningRig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows - shell stubs")
+	}
+
+	townRoot, expectedTownWD := makeRoutingTownWorkspace(t)
+	chdirConvoyTest(t, townRoot)
+	t.Setenv("BEADS_DIR", "/wrong/.beads")
+
+	rigDir := filepath.Join(townRoot, "fcc_pliegos")
+	if err := os.MkdirAll(filepath.Join(rigDir, ".beads"), 0755); err != nil {
+		t.Fatalf("mkdir rig beads: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(townRoot, ".beads", "routes.jsonl"), []byte(`{"prefix":"hq-","path":"."}`+"\n"+`{"prefix":"fp-","path":"fcc_pliegos"}`+"\n"), 0644); err != nil {
+		t.Fatalf("write routes: %v", err)
+	}
+
+	expectedRigWD := rigDir
+	if resolved, err := filepath.EvalSymlinks(rigDir); err == nil && resolved != "" {
+		expectedRigWD = resolved
+	}
+	expectedTownBeadsWD := filepath.Join(expectedTownWD, ".beads")
+	expectedRigBeads := filepath.Join(expectedRigWD, ".beads")
+
+	scriptBody := fmt.Sprintf(`
+if [ "$*" = "--allow-stale version" ]; then
+  exit 0
+fi
+
+case "$*" in
+  *sql*dependencies*)
+    if [ "$PWD" != "%s" ]; then
+      echo "expected town beads dir for dep query, got $PWD" >&2
+      exit 1
+    fi
+    echo '[{"depends_on_id":"fp-done"}]'
+    ;;
+  "dep list hq-cv-fcc --direction=down --type=tracks --allow-stale --json")
+    if [ "$PWD" != "%s" ]; then
+      echo "expected town beads dir for dep list, got $PWD" >&2
+      exit 1
+    fi
+    echo '[{"id":"fp-done"}]'
+    ;;
+  "show fp-done --json")
+    if [ "$PWD" != "%s" ]; then
+      echo "expected rig dir, got $PWD" >&2
+      exit 1
+    fi
+    if [ "$BEADS_DIR" != "%s" ]; then
+      echo "expected rig BEADS_DIR, got $BEADS_DIR" >&2
+      exit 1
+    fi
+    echo '[{"id":"fp-done","title":"Closed FCC bead","status":"closed","issue_type":"task"}]'
+    ;;
+  *)
+    echo "unexpected bd args: $*" >&2
+    exit 1
+    ;;
+esac
+`, expectedTownBeadsWD, expectedTownBeadsWD, expectedRigWD, expectedRigBeads)
+	writeRoutingBdStub(t, scriptBody)
+
+	tracked, err := getTrackedIssues(filepath.Join(townRoot, ".beads"), "hq-cv-fcc")
+	if err != nil {
+		t.Fatalf("getTrackedIssues: %v", err)
+	}
+	if len(tracked) != 1 {
+		t.Fatalf("expected 1 tracked issue, got %d: %#v", len(tracked), tracked)
+	}
+	if tracked[0].ID != "fp-done" || tracked[0].Status != "closed" || tracked[0].Title != "Closed FCC bead" {
+		t.Fatalf("tracked issue was not resolved from rig DB: %#v", tracked[0])
+	}
+}
+
 // TestConvoyCreate_UsesTrackingHelper verifies convoy create delegates tracking
 // to the in-process helper instead of shelling out to `bd dep add`.
 func TestConvoyCreate_UsesTrackingHelper(t *testing.T) {
