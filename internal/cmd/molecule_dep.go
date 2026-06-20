@@ -14,7 +14,7 @@ import (
 // Unknown/custom types are non-blocking, matching beads' default behavior.
 func isBlockingDepType(depType string) bool {
 	switch depType {
-	case "blocks", "conditional-blocks", "waits-for":
+	case "blocks", "conditional-blocks", "waits-for", "merge-blocks":
 		return true
 	default:
 		return false

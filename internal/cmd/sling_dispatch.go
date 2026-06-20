@@ -132,11 +132,11 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 		return result, fmt.Errorf("could not get bead info: %w", err)
 	}
 
-	// Guard against dispatching closed/tombstone beads (defense-in-depth).
-	// Not bypassed by --force — if you need to re-dispatch, reopen the bead first.
-	if info.Status == "closed" || info.Status == "tombstone" {
-		result.ErrMsg = "already " + info.Status
-		return result, fmt.Errorf("bead %s is %s (work already completed)", params.BeadID, info.Status)
+	// Guard against dispatching closed, blocked, or dependency-gated beads.
+	// Not bypassed by --force — unblock/reopen the bead before dispatching.
+	if err := validateBeadDispatchReady(params.BeadID, info); err != nil {
+		result.ErrMsg = dispatchReadinessErrMsg(info)
+		return result, err
 	}
 
 	// Save explicit force state before dead-agent auto-force, so the deferred

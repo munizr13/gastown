@@ -621,10 +621,10 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 		return fmt.Errorf("refusing to sling bead %s: title %q looks like a CLI flag (garbage bead from flag-parsing bug)", beadID, info.Title)
 	}
 
-	// Guard against dispatching closed/tombstone beads (defense-in-depth).
-	// Not bypassed by --force — if you need to re-dispatch, reopen the bead first.
-	if info.Status == "closed" || info.Status == "tombstone" {
-		return fmt.Errorf("bead %s is %s (work already completed)", beadID, info.Status)
+	// Guard against dispatching closed, blocked, or dependency-gated beads.
+	// Not bypassed by --force — unblock/reopen the bead before dispatching.
+	if err := validateBeadDispatchReady(beadID, info); err != nil {
+		return err
 	}
 
 	// Guard against slinging deferred beads (gt-1326mw).

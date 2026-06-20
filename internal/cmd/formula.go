@@ -336,8 +336,11 @@ func dryRunFormula(f *formula.Formula, formulaName, targetRig string) error {
 		// Generate review ID for dry-run display
 		reviewID := generateFormulaShortID()
 
-		// Parse --set key=value pairs for template rendering
-		setVars := parseSetVars(formulaRunSet)
+		// Parse --set key=value pairs for template rendering.
+		setVars := parseFormulaSetVars(f, formulaRunSet)
+		if _, ok := setVars["design_id"]; !ok {
+			setVars["design_id"] = reviewID
+		}
 
 		// Build target description
 		var targetDescription string
@@ -469,6 +472,124 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 		}
 	}
 
+	// Generate a unique review ID for this convoy run and render all templates
+	// before creating beads. This keeps malformed formulas from leaving partial
+	// convoys and prevents raw {{.output.*}} placeholders from reaching workers.
+	reviewID := generateFormulaShortID()
+	setVars := parseFormulaSetVars(f, formulaRunSet)
+	if _, ok := setVars["design_id"]; !ok {
+		setVars["design_id"] = reviewID
+	}
+
+	var targetDescription string
+	if formulaRunPR > 0 {
+		targetDescription = fmt.Sprintf("PR #%d", formulaRunPR)
+	} else {
+		targetDescription = "local files"
+	}
+
+	var prTitle string
+	var changedFiles []map[string]interface{}
+	if formulaRunPR > 0 {
+		prTitle, changedFiles = fetchPRInfo(formulaRunPR)
+	}
+
+	baseConvoyCtx := func() map[string]interface{} {
+		ctx := map[string]interface{}{
+			"formula_name":       formulaName,
+			"target_description": targetDescription,
+			"review_id":          reviewID,
+			"pr_number":          formulaRunPR,
+			"pr_title":           prTitle,
+			"changed_files":      changedFiles,
+			"files":              formulaRunFiles,
+		}
+		for k, v := range setVars {
+			ctx[k] = v
+		}
+		return ctx
+	}
+
+	var outputDir string
+	var outputSynthesis string
+	if f.Output != nil {
+		outputSynthesis = f.Output.Synthesis
+		if outputSynthesis == "" {
+			outputSynthesis = "synthesis.md"
+		}
+		if f.Output.Directory != "" {
+			dirCtx := baseConvoyCtx()
+			renderedDir, err := renderFormulaTemplate("output directory", f.Output.Directory, dirCtx)
+			if err != nil {
+				return err
+			}
+			outputDir = renderedDir
+		}
+	}
+
+	renderedLegDescriptions := make(map[string]string, len(f.Legs))
+	for _, leg := range f.Legs {
+		legCtx := baseConvoyCtx()
+		legCtx["leg"] = map[string]interface{}{
+			"id":          leg.ID,
+			"title":       leg.Title,
+			"focus":       leg.Focus,
+			"description": leg.Description,
+		}
+		if f.Output != nil {
+			legPattern := f.Output.LegPattern
+			if legPattern == "" {
+				legPattern = leg.ID + "-findings.md"
+			}
+			renderedPattern, err := renderFormulaTemplate(fmt.Sprintf("output pattern for leg %s", leg.ID), legPattern, legCtx)
+			if err != nil {
+				return err
+			}
+			outputPath := filepath.Join(outputDir, renderedPattern)
+			legCtx["output_path"] = outputPath
+			legCtx["output"] = map[string]interface{}{
+				"directory": outputDir,
+				"synthesis": outputSynthesis,
+			}
+		}
+
+		legDesc, err := renderFormulaTemplate(fmt.Sprintf("leg %s description", leg.ID), leg.Description, legCtx)
+		if err != nil {
+			return err
+		}
+		if f.Prompts != nil {
+			if basePrompt, ok := f.Prompts["base"]; ok {
+				renderedPrompt, err := renderFormulaTemplate(fmt.Sprintf("base prompt for leg %s", leg.ID), basePrompt, legCtx)
+				if err != nil {
+					return err
+				}
+				legDesc = fmt.Sprintf("%s\n\n---\nBase Prompt:\n%s", legDesc, renderedPrompt)
+			}
+		}
+		renderedLegDescriptions[leg.ID] = legDesc
+	}
+
+	renderedSynthesisDescription := ""
+	if f.Synthesis != nil {
+		synDesc := f.Synthesis.Description
+		if synDesc == "" {
+			synDesc = "Synthesize findings from all legs into unified output"
+		}
+		synCtx := baseConvoyCtx()
+		if f.Output != nil {
+			synCtx["output_path"] = filepath.Join(outputDir, outputSynthesis)
+			synCtx["output"] = map[string]interface{}{
+				"directory": outputDir,
+				"synthesis": outputSynthesis,
+			}
+		}
+		rendered, err := renderFormulaTemplate("synthesis description", synDesc, synCtx)
+		if err != nil {
+			return err
+		}
+		renderedSynthesisDescription = rendered
+	}
+
 	// Step 1: Create convoy bead
 	convoyID := fmt.Sprintf("%s-cv-%s", rigPrefix, generateFormulaShortID())
 	convoyTitle := fmt.Sprintf("%s: %s", formulaName, f.Description)
@@ -509,35 +630,8 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 
 	fmt.Printf("%s Created convoy: %s\n", style.Bold.Render("✓"), convoyID)
 
-	// Generate a unique review ID for this convoy run
-	reviewID := generateFormulaShortID()
-
-	// Build target description
-	var targetDescription string
-	if formulaRunPR > 0 {
-		targetDescription = fmt.Sprintf("PR #%d", formulaRunPR)
-	} else {
-		targetDescription = "local files"
-	}
-
-	// Fetch PR info if --pr flag is set
-	var prTitle string
-	var changedFiles []map[string]interface{}
-	if formulaRunPR > 0 {
-		prTitle, changedFiles = fetchPRInfo(formulaRunPR)
-	}
-
 	// Create output directory if configured
-	var outputDir string
-	if f.Output != nil && f.Output.Directory != "" {
-		// Build minimal context for directory rendering
-		dirCtx := map[string]interface{}{
-			"review_id":    reviewID,
-			"formula_name": formulaName,
-		}
-		outputDir = renderTemplateOrDefault(f.Output.Directory, dirCtx, ".reviews/"+reviewID)
-
-		// Create the directory
+	if outputDir != "" {
 		if err := os.MkdirAll(outputDir, 0755); err != nil {
 			fmt.Printf("%s Failed to create output directory %s: %v\n",
 				style.Dim.Render("Warning:"), outputDir, err)
@@ -546,61 +640,12 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 		}
 	}
 
-	// Parse --set key=value pairs for template rendering
-	setVars := parseSetVars(formulaRunSet)
-
 	// Step 2: Create leg beads and track them
 	legBeads := make(map[string]string) // leg.ID -> bead ID
 	for _, leg := range f.Legs {
 		legBeadID := fmt.Sprintf("%s-leg-%s", rigPrefix, generateFormulaShortID())
 
-		// Build leg description with prompt if available
-		legDesc := leg.Description
-		if f.Prompts != nil {
-			if basePrompt, ok := f.Prompts["base"]; ok {
-				// Build template context for this leg
-				legCtx := map[string]interface{}{
-					"formula_name":       formulaName,
-					"target_description": targetDescription,
-					"review_id":          reviewID,
-					"pr_number":          formulaRunPR,
-					"pr_title":           prTitle,
-					"leg": map[string]interface{}{
-						"id":          leg.ID,
-						"title":       leg.Title,
-						"focus":       leg.Focus,
-						"description": leg.Description,
-					},
-					"changed_files": changedFiles,
-					"files":         formulaRunFiles,
-				}
-
-				// Inject --set key=value pairs into template context
-				for k, v := range setVars {
-					legCtx[k] = v
-				}
-
-				// Compute output path for this leg
-				if f.Output != nil {
-					legPattern := renderTemplateOrDefault(f.Output.LegPattern, legCtx, leg.ID+"-findings.md")
-					outputPath := filepath.Join(outputDir, legPattern)
-					legCtx["output_path"] = outputPath
-					legCtx["output"] = map[string]interface{}{
-						"directory": outputDir,
-						"synthesis": f.Output.Synthesis,
-					}
-				}
-
-				// Render the base prompt with template context
-				renderedPrompt, err := renderTemplate(basePrompt, legCtx)
-				if err != nil {
-					fmt.Printf("%s Failed to render template for %s: %v\n",
-						style.Dim.Render("Warning:"), leg.ID, err)
-					renderedPrompt = basePrompt // Fall back to raw template
-				}
-				legDesc = fmt.Sprintf("%s\n\n---\nBase Prompt:\n%s", leg.Description, renderedPrompt)
-			}
-		}
+		legDesc := renderedLegDescriptions[leg.ID]
 
 		legArgs := []string{
 			"create",
@@ -638,17 +683,12 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 	if f.Synthesis != nil {
 		synthesisBeadID = fmt.Sprintf("%s-syn-%s", rigPrefix, generateFormulaShortID())
 
-		synDesc := f.Synthesis.Description
-		if synDesc == "" {
-			synDesc = "Synthesize findings from all legs into unified output"
-		}
-
 		synArgs := []string{
 			"create",
 			"--type=task",
 			"--id=" + synthesisBeadID,
 			"--title=" + f.Synthesis.Title,
-			"--description=" + synDesc,
+			"--description=" + renderedSynthesisDescription,
 		}
 		if beads.NeedsForceForID(synthesisBeadID) {
 			synArgs = append(synArgs, "--force")
@@ -693,7 +733,7 @@ func executeConvoyFormula(f *formula.Formula, formulaName, targetRig string) err
 		// Agent precedence (GH#2118): per-leg > CLI --agent > formula-level
 		legAgent := resolveFormulaLegAgent(leg.Agent, formulaRunAgent, f.Agent)
 
-		slingArgs := buildConvoyLegSlingArgs(legBeadID, targetRig, leg.Description, leg.Title, legAgent, leg.ReviewOnly || f.ReviewOnly)
+		slingArgs := buildConvoyLegSlingArgs(legBeadID, targetRig, renderedLegDescriptions[leg.ID], leg.Title, legAgent, leg.ReviewOnly || f.ReviewOnly)
 
 		slingCmd := exec.Command("gt", slingArgs...)
 		slingCmd.Stdout = os.Stdout
@@ -758,6 +798,16 @@ func executeWorkflowFormula(f *formula.Formula, formulaName, targetRig string) e
 		}
 	}
 
+	setVars := parseFormulaSetVars(f, formulaRunSet)
+	renderedStepDescriptions := make(map[string]string, len(f.Steps))
+	for _, step := range f.Steps {
+		stepDescription := substituteFormulaVars(step.Description, setVars)
+		if err := validateNoUnresolvedDottedFormulaVars(fmt.Sprintf("workflow step %s", step.ID), stepDescription); err != nil {
+			return err
+		}
+		renderedStepDescriptions[step.ID] = workflowStepDescription(step, stepDescription)
+	}
+
 	// Step 1: Create workflow root bead
 	workflowID := fmt.Sprintf("hq-wf-%s", generateFormulaShortID())
 	workflowTitle := fmt.Sprintf("%s: %s (%d steps)", formulaName,
@@ -794,11 +844,10 @@ func executeWorkflowFormula(f *formula.Formula, formulaName, targetRig string) e
 
 	// Step 2: Create step beads and wire dependencies
 	stepBeads := make(map[string]string) // step.ID -> bead ID
-	setVars := parseSetVars(formulaRunSet)
 
 	for _, step := range f.Steps {
 		stepBeadID := fmt.Sprintf("%s-wfs-%s", rigPrefix, generateFormulaShortID())
-		stepDescription := workflowStepDescription(step, substituteFormulaVars(step.Description, setVars))
+		stepDescription := renderedStepDescriptions[step.ID]
 
 		// Use --body-file=- (stdin) for the description to avoid CLI arg
 		// length limits and quoting issues with large markdown descriptions.
@@ -901,7 +950,7 @@ func executeWorkflowFormula(f *formula.Formula, formulaName, targetRig string) e
 			stepAgent = f.Agent
 		}
 		stepTarget := workflowStepTarget(step, targetRig)
-		stepDescription := workflowStepDescription(step, substituteFormulaVars(step.Description, setVars))
+		stepDescription := renderedStepDescriptions[step.ID]
 
 		slingArgs := buildWorkflowStepSlingArgs(stepBeadID, stepTarget, stepDescription, step.Title, stepAgent)
 
@@ -1016,7 +1065,29 @@ func parseSetVars(setArgs []string) map[string]interface{} {
 	return vars
 }
 
-var formulaVarPlaceholder = regexp.MustCompile(`\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}`)
+func parseFormulaSetVars(f *formula.Formula, setArgs []string) map[string]interface{} {
+	vars := parseSetVars(setArgs)
+	for name, input := range f.Inputs {
+		if _, ok := vars[name]; ok {
+			continue
+		}
+		if input.Default != "" || !input.Required {
+			vars[name] = input.Default
+		}
+	}
+	for name, v := range f.Vars {
+		if _, ok := vars[name]; ok {
+			continue
+		}
+		if v.Default != "" || !v.Required {
+			vars[name] = v.Default
+		}
+	}
+	return vars
+}
+
+var formulaVarPlaceholder = regexp.MustCompile(`\{\{\s*\.?([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\s*\}\}`)
+var dottedFormulaVarPlaceholder = regexp.MustCompile(`\{\{\s*\.[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*\s*\}\}`)
 
 func substituteFormulaVars(text string, vars map[string]interface{}) string {
 	if len(vars) == 0 {
@@ -1027,12 +1098,78 @@ func substituteFormulaVars(text string, vars map[string]interface{}) string {
 		if len(sub) < 2 {
 			return match
 		}
-		v, ok := vars[sub[1]]
+		v, ok := lookupFormulaVar(vars, sub[1])
 		if !ok {
 			return match
 		}
 		return fmt.Sprint(v)
 	})
+}
+
+func lookupFormulaVar(vars map[string]interface{}, key string) (interface{}, bool) {
+	if v, ok := vars[key]; ok {
+		return v, true
+	}
+	parts := strings.Split(key, ".")
+	if len(parts) == 1 {
+		return nil, false
+	}
+	var current interface{} = vars
+	for _, part := range parts {
+		switch typed := current.(type) {
+		case map[string]interface{}:
+			v, ok := typed[part]
+			if !ok {
+				return nil, false
+			}
+			current = v
+		case map[string]string:
+			v, ok := typed[part]
+			if !ok {
+				return nil, false
+			}
+			current = v
+		default:
+			return nil, false
+		}
+	}
+	return current, true
+}
+
+func unresolvedDottedFormulaVars(text string) []string {
+	matches := dottedFormulaVarPlaceholder.FindAllString(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(matches))
+	var unresolved []string
+	for _, match := range matches {
+		if seen[match] {
+			continue
+		}
+		seen[match] = true
+		unresolved = append(unresolved, match)
+	}
+	return unresolved
+}
+
+func validateNoUnresolvedDottedFormulaVars(label, text string) error {
+	unresolved := unresolvedDottedFormulaVars(text)
+	if len(unresolved) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s contains unresolved template variable(s): %s", label, strings.Join(unresolved, ", "))
+}
+
+func renderFormulaTemplate(label, tmplText string, ctx map[string]interface{}) (string, error) {
+	rendered, err := renderTemplate(tmplText, ctx)
+	if err != nil {
+		return "", fmt.Errorf("rendering %s: %w", label, err)
+	}
+	if err := validateNoUnresolvedDottedFormulaVars(label, rendered); err != nil {
+		return "", err
+	}
+	return rendered, nil
 }
 
 // findFormulaFile searches for a formula file by name
@@ -1076,7 +1213,7 @@ func parseFormulaFile(path string) (*formula.Formula, error) {
 
 // renderTemplate renders a Go text/template with the given context map
 func renderTemplate(tmplText string, ctx map[string]interface{}) (string, error) {
-	tmpl, err := template.New("prompt").Parse(tmplText)
+	tmpl, err := template.New("prompt").Option("missingkey=error").Parse(tmplText)
 	if err != nil {
 		return "", fmt.Errorf("parsing template: %w", err)
 	}

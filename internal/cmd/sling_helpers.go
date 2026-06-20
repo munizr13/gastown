@@ -109,6 +109,82 @@ func isDeferredBead(info *beadInfo) bool {
 	return false
 }
 
+func firstOpenBlockingDependency(info *beadInfo) (beads.IssueDep, bool) {
+	if info == nil {
+		return beads.IssueDep{}, false
+	}
+	for _, dep := range info.Dependencies {
+		depType := dependencyType(dep)
+		if !isBlockingDepType(depType) {
+			continue
+		}
+		switch dep.Status {
+		case "closed", "tombstone":
+			continue
+		default:
+			return dep, true
+		}
+	}
+	return beads.IssueDep{}, false
+}
+
+func dependencyType(dep beads.IssueDep) string {
+	if dep.DependencyType != "" {
+		return dep.DependencyType
+	}
+	return dep.Type
+}
+
+func dependencyLabel(dep beads.IssueDep) string {
+	if dep.ID != "" {
+		return dep.ID
+	}
+	if dep.Title != "" {
+		return dep.Title
+	}
+	return "(unknown dependency)"
+}
+
+func dependencyStatus(dep beads.IssueDep) string {
+	if dep.Status != "" {
+		return dep.Status
+	}
+	return "unknown"
+}
+
+func validateBeadDispatchReady(beadID string, info *beadInfo) error {
+	if info == nil {
+		return fmt.Errorf("bead %s has no status data", beadID)
+	}
+	switch info.Status {
+	case "closed", "tombstone":
+		return fmt.Errorf("bead %s is %s (work already completed)", beadID, info.Status)
+	case "blocked":
+		return fmt.Errorf("bead %s is blocked; resolve the blocker before slinging", beadID)
+	}
+	if dep, ok := firstOpenBlockingDependency(info); ok {
+		return fmt.Errorf("bead %s is blocked by %s dependency %s (status=%s); resolve it before slinging",
+			beadID, dependencyType(dep), dependencyLabel(dep), dependencyStatus(dep))
+	}
+	return nil
+}
+
+func dispatchReadinessErrMsg(info *beadInfo) string {
+	if info == nil {
+		return "missing bead status"
+	}
+	switch info.Status {
+	case "closed", "tombstone":
+		return "already " + info.Status
+	case "blocked":
+		return "blocked"
+	}
+	if dep, ok := firstOpenBlockingDependency(info); ok {
+		return fmt.Sprintf("blocked by %s", dependencyLabel(dep))
+	}
+	return ""
+}
+
 func applyWorkflowStepTargetOverride(args []string) ([]string, error) {
 	if len(args) != 2 {
 		return args, nil
