@@ -48,11 +48,14 @@ func TestLaunchGateAllowsExplicitOverride(t *testing.T) {
 	townRoot := t.TempDir()
 	repoRoot := writeLaunchGateMarker(t, townRoot, "alpha")
 	writeLaunchGateJSON(t, filepath.Join(repoRoot, launchGateOverrideRelPath), map[string]any{
-		"contract":        launchGateOverrideContract,
-		"decision":        "allow_implementation_without_mol_idea_to_plan",
-		"paperclip_issue": "RENA-123",
-		"approved_by":     "cto",
-		"reason":          "Emergency recovery with explicit CTO approval.",
+		"contract":          launchGateOverrideContract,
+		"decision":          "allow_implementation_without_mol_idea_to_plan",
+		"paperclip_issue":   "RENA-123",
+		"approved_by":       "cto",
+		"reason":            "Emergency recovery with explicit CTO approval.",
+		"allowed_scope":     "Only the recovery patch named in RENA-123.",
+		"checkpoint":        "Review before any feature expansion.",
+		"verification_plan": "CTO verifies PRD/design clarity in the override record before merge.",
 	})
 
 	err := enforceFromScratchLaunchGate(townRoot, "alpha", "alpha-123", &beadInfo{Title: "Implement API"}, launchGateDispatchOptions{})
@@ -61,14 +64,40 @@ func TestLaunchGateAllowsExplicitOverride(t *testing.T) {
 	}
 }
 
+func TestLaunchGateBlocksOverrideWithoutScopeCheckpointAndVerification(t *testing.T) {
+	townRoot := t.TempDir()
+	repoRoot := writeLaunchGateMarker(t, townRoot, "alpha")
+	writeLaunchGateJSON(t, filepath.Join(repoRoot, launchGateOverrideRelPath), map[string]any{
+		"contract":        launchGateOverrideContract,
+		"decision":        "allow_implementation_without_mol_idea_to_plan",
+		"paperclip_issue": "RENA-123",
+		"approved_by":     "cto",
+		"reason":          "Emergency recovery with explicit CTO approval.",
+	})
+
+	err := enforceFromScratchLaunchGate(townRoot, "alpha", "alpha-123", &beadInfo{Title: "Implement API"}, launchGateDispatchOptions{})
+	if err == nil {
+		t.Fatal("override without scope/checkpoint/verification should block")
+	}
+	msg := err.Error()
+	for _, want := range []string{"allowed_scope", "expires_at or checkpoint", "verification_plan"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("block error missing %q:\n%s", want, msg)
+		}
+	}
+}
+
 func TestLaunchGateBlocksOverrideWithoutPaperclipOrGastownRecord(t *testing.T) {
 	townRoot := t.TempDir()
 	repoRoot := writeLaunchGateMarker(t, townRoot, "alpha")
 	writeLaunchGateJSON(t, filepath.Join(repoRoot, launchGateOverrideRelPath), map[string]any{
-		"contract":    launchGateOverrideContract,
-		"decision":    "allow_implementation_without_mol_idea_to_plan",
-		"approved_by": "cto",
-		"reason":      "Emergency recovery with explicit CTO approval.",
+		"contract":          launchGateOverrideContract,
+		"decision":          "allow_implementation_without_mol_idea_to_plan",
+		"approved_by":       "cto",
+		"reason":            "Emergency recovery with explicit CTO approval.",
+		"allowed_scope":     "Only the recovery patch.",
+		"checkpoint":        "Review before expansion.",
+		"verification_plan": "CTO verifies PRD/design clarity before merge.",
 	})
 
 	err := enforceFromScratchLaunchGate(townRoot, "alpha", "alpha-123", &beadInfo{Title: "Implement API"}, launchGateDispatchOptions{})

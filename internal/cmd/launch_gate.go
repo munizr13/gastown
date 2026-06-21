@@ -68,13 +68,16 @@ type launchGateVerificationPass struct {
 }
 
 type launchGateOverride struct {
-	Contract    string `json:"contract"`
-	Decision    string `json:"decision"`
-	PaperclipID string `json:"paperclip_issue,omitempty"`
-	GastownBead string `json:"gastown_bead,omitempty"`
-	ApprovedBy  string `json:"approved_by,omitempty"`
-	Reason      string `json:"reason,omitempty"`
-	ExpiresAt   string `json:"expires_at,omitempty"`
+	Contract         string `json:"contract"`
+	Decision         string `json:"decision"`
+	PaperclipID      string `json:"paperclip_issue,omitempty"`
+	GastownBead      string `json:"gastown_bead,omitempty"`
+	ApprovedBy       string `json:"approved_by,omitempty"`
+	Reason           string `json:"reason,omitempty"`
+	AllowedScope     string `json:"allowed_scope,omitempty"`
+	ExpiresAt        string `json:"expires_at,omitempty"`
+	Checkpoint       string `json:"checkpoint,omitempty"`
+	VerificationPlan string `json:"verification_plan,omitempty"`
 }
 
 type launchGateDispatchOptions struct {
@@ -170,7 +173,7 @@ func enforceFromScratchLaunchGate(townRoot, rigName, beadID string, info *beadIn
 	}
 	lines = append(lines, "",
 		fmt.Sprintf("To proceed normally: finish mol-idea-to-plan and write %s", launchGateReceiptRelPath),
-		fmt.Sprintf("To override: write %s with a Paperclip issue or Gastown bead reference", launchGateOverrideRelPath),
+		fmt.Sprintf("To override: write %s with a Paperclip issue or Gastown bead reference, approved_by, reason, allowed_scope, expires_at/checkpoint, and verification_plan", launchGateOverrideRelPath),
 	)
 	return fmt.Errorf("%s", strings.Join(lines, "\n"))
 }
@@ -382,6 +385,15 @@ func validateLaunchGateOverride(path string) (bool, []string) {
 	}
 	if strings.TrimSpace(override.Reason) == "" {
 		missing = append(missing, fmt.Sprintf("%s must include reason", launchGateOverrideRelPath))
+	}
+	if strings.TrimSpace(override.AllowedScope) == "" {
+		missing = append(missing, fmt.Sprintf("%s must include allowed_scope", launchGateOverrideRelPath))
+	}
+	if strings.TrimSpace(override.VerificationPlan) == "" {
+		missing = append(missing, fmt.Sprintf("%s must include verification_plan", launchGateOverrideRelPath))
+	}
+	if strings.TrimSpace(override.ExpiresAt) == "" && strings.TrimSpace(override.Checkpoint) == "" {
+		missing = append(missing, fmt.Sprintf("%s must include expires_at or checkpoint", launchGateOverrideRelPath))
 	}
 	if override.ExpiresAt != "" {
 		expires, err := time.Parse(time.RFC3339, override.ExpiresAt)
