@@ -1076,8 +1076,21 @@ func (b *Beads) ListMergeRequests(opts ListOptions) ([]*Issue, error) {
 			"GROUP BY w.id, w.title, w.description, w.status, w.priority, w.assignee, w.created_at, w.updated_at, w.created_by",
 		labelFilter, statusFilter)
 
+	// RENASCENTIA double-submit fix (2026-07-30, approval a5cfeced under
+	// GASTOWN-CORE-CHANGE-PROTOCOL v1): MR beads are created Ephemeral, so they
+	// live ONLY in the wisps table. Silently swallowing a wisps-query failure
+	// returned an incomplete list that looked authoritative: the branch+SHA
+	// dedup found no existing MR (→ second MR created) and FindOpenMRsForIssue
+	// found no old MRs (→ supersede no-op). Result: two open MRs per commit.
+	// Callers must be able to distinguish "no MRs" from "could not read MRs".
 	sqlOut, sqlErr := b.run("sql", "--json", query)
-	if sqlErr == nil && len(sqlOut) > 0 && isJSONBytes(sqlOut) {
+	if sqlErr != nil {
+		return nil, fmt.Errorf("merge-request wisps query failed (MR list would be incomplete): %w", sqlErr)
+	}
+	if len(sqlOut) > 0 && !isJSONBytes(sqlOut) {
+		return nil, fmt.Errorf("merge-request wisps query returned non-JSON output (MR list would be incomplete)")
+	}
+	if len(sqlOut) > 0 {
 		var rows []struct {
 			ID          string `json:"id"`
 			Title       string `json:"title"`

@@ -1176,8 +1176,17 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			existingMR, err = bd.FindMRForBranch(branch)
 		}
 		if err != nil {
-			style.PrintWarning("could not check for existing MR: %v", err)
-			// Continue with creation attempt - Create will fail if duplicate
+			// RENASCENTIA double-submit fix (2026-07-30, approval a5cfeced):
+			// FAIL CLOSED. The old comment assumed "Create will fail if
+			// duplicate" — it does not: MR beads are ephemeral wisps with no
+			// uniqueness constraint on branch, so creating blind after a failed
+			// existence check is exactly how the second MR was born. The branch
+			// is already pushed; hand off to the witness instead of guessing.
+			mrFailed = true
+			errMsg := fmt.Sprintf("MR existence check failed (refusing to create a possibly-duplicate MR): %v", err)
+			doneErrors = append(doneErrors, errMsg)
+			style.PrintWarning("%s\nBranch is pushed but no MR was created. Witness will be notified; re-run gt done once beads is readable.", errMsg)
+			goto notifyWitness
 		}
 
 		if existingMR != nil {
@@ -1277,7 +1286,12 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			// (same branch, different SHA) is stale. Close it so the refinery
 			// doesn't process the old submission.
 			if issueID != "" {
-				if oldMRs, findErr := bd.FindOpenMRsForIssue(issueID); findErr == nil {
+				oldMRs, findErr := bd.FindOpenMRsForIssue(issueID)
+				if findErr != nil {
+					// Was silent: a failed lookup meant stale MRs were never
+					// superseded and quietly accumulated in the queue.
+					style.PrintWarning("could not look up prior MRs to supersede for %s: %v\nCheck 'gt mq list %s' for stale MRs.", issueID, findErr, rigName)
+				} else {
 					for _, old := range oldMRs {
 						if old.ID == mrID {
 							continue // skip the one we just created
