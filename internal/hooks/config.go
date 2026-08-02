@@ -339,6 +339,25 @@ func DefaultOverrides() map[string]*HooksConfig {
 							Type:    "command",
 							Command: gtCommand("gt tap polecat-stop-check"),
 						},
+						// Polecats must ALSO record their cost. Every other role
+						// records on Stop, but polecats used to spend their single
+						// Stop slot on the idle-catcher alone — so the one role that
+						// does the actual work was the one role absent from
+						// `gt costs`. On 2026-08-01 the by-role rows summed to
+						// exactly the reported town total with no polecat line, and
+						// two completed pilot runs (~$11.59 and ~$8.11 of equivalent
+						// API list price) were invisible to the ledger.
+						//
+						// Both hooks run: Hooks is a list, and the doctor's Stop
+						// check is a substring match (hookHasPattern), so adding
+						// this does not resurrect the #3648 non-convergence loop —
+						// polecat-stop-check is still present for the doctor to find.
+						// Backgrounded with & to match the other roles' templates,
+						// so cost accounting never delays session teardown.
+						{
+							Type:    "command",
+							Command: gtCommand("gt costs record &"),
+						},
 					},
 				},
 			},

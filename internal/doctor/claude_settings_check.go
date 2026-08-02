@@ -34,14 +34,14 @@ type ClaudeSettingsCheck struct {
 }
 
 type staleSettingsInfo struct {
-	path           string        // Full path to settings file
-	agentType      string        // e.g., "witness", "refinery", "deacon", "mayor"
-	rigName        string        // Rig name (empty for town-level agents)
-	sessionName    string        // tmux session name for cycling
-	missing        []string      // What's missing from the settings
-	wrongLocation  bool          // True if file is in wrong location (should be deleted)
-	missingFile    bool          // True if settings.local.json doesn't exist (needs agent restart)
-	gitStatus      gitFileStatus // Git status for wrong-location files (for safe deletion)
+	path          string        // Full path to settings file
+	agentType     string        // e.g., "witness", "refinery", "deacon", "mayor"
+	rigName       string        // Rig name (empty for town-level agents)
+	sessionName   string        // tmux session name for cycling
+	missing       []string      // What's missing from the settings
+	wrongLocation bool          // True if file is in wrong location (should be deleted)
+	missingFile   bool          // True if settings.local.json doesn't exist (needs agent restart)
+	gitStatus     gitFileStatus // Git status for wrong-location files (for safe deletion)
 }
 
 // NewClaudeSettingsCheck creates a new Claude settings validation check.
@@ -403,9 +403,9 @@ func (c *ClaudeSettingsCheck) findSettingsFiles(townRoot string) []staleSettings
 			crewCorrectSettings := filepath.Join(crewDir, ".claude", "settings.json")
 			if fileExists(crewCorrectSettings) {
 				files = append(files, staleSettingsInfo{
-					path:        crewCorrectSettings,
-					agentType:   "crew",
-					rigName:     rigName,
+					path:      crewCorrectSettings,
+					agentType: "crew",
+					rigName:   rigName,
 				})
 			} else {
 				files = append(files, staleSettingsInfo{
@@ -459,9 +459,9 @@ func (c *ClaudeSettingsCheck) findSettingsFiles(townRoot string) []staleSettings
 			polecatCorrectSettings := filepath.Join(polecatsDir, ".claude", "settings.json")
 			if fileExists(polecatCorrectSettings) {
 				files = append(files, staleSettingsInfo{
-					path:        polecatCorrectSettings,
-					agentType:   "polecat",
-					rigName:     rigName,
+					path:      polecatCorrectSettings,
+					agentType: "polecat",
+					rigName:   rigName,
 				})
 			} else {
 				files = append(files, staleSettingsInfo{
@@ -607,6 +607,12 @@ func (c *ClaudeSettingsCheck) checkSettings(path, agentType string) []string {
 func expectedStopPattern(agentType string) string {
 	switch agentType {
 	case "polecat", "polecats":
+		// Polecats run BOTH the idle-catcher and cost recording. Only one
+		// pattern can be returned here, so this keeps the polecat-specific one:
+		// it is the pattern that used to be the ONLY thing polecats had, so a
+		// polecat whose settings predate the cost-recording change still fails
+		// the check for the right reason and is repaired by hooks-sync, rather
+		// than being reported as broken for a hook it never had.
 		return "polecat-stop-check"
 	default:
 		return "costs record"
