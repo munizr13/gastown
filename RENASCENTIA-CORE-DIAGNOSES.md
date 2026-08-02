@@ -4,10 +4,11 @@ Written under `~/gt/GASTOWN-CORE-CHANGE-PROTOCOL.md`, which requires a written
 diagnosis (symptom, root cause, proposed change, blast radius, rollback) before
 a Gas Town core change lands, and a specific per-change approval from Rodrigo.
 
-Two of the four defects from the 2026-08-01 pilots are **implemented and tested**
-on `rebase/upstream-2026-08`. Two are **diagnosed only** — both turned out to sit
-on machinery whose failure modes are documented in-tree, and neither should be
-patched at speed.
+**All four** defects from the 2026-08-01 pilots are now **implemented, tested and
+deployed** (`gt v1.2.1-311-g344196ed`). Defects 3 and 4 were written up here as
+diagnosis-only first, deliberately: both sit on machinery whose failure modes are
+documented in-tree, and both needed the root cause established before a line was
+changed. Their sections below keep the diagnosis and record the fix that followed.
 
 ---
 
@@ -78,7 +79,7 @@ lags.
 
 ---
 
-## DIAGNOSED, NOT FIXED — 3. `gt costs` omits polecats
+## FIXED — 3. `gt costs` omits polecats
 
 **Symptom.** `gt costs --by-role` shows boot, deacon, mayor, witness, refinery —
 and no polecat line. The role rows sum to exactly the reported total
@@ -96,20 +97,32 @@ they never call `gt costs record` and never reach the ledger that `--today`,
 `--week` and `--by-role` read. The live path (`runLiveCosts`) enumerates tmux
 sessions, so a FINISHED polecat is invisible there too.
 
-**Why I did not patch it tonight.** The same comment records that this exact
+**FIXED in `69691492`.** Polecats now run BOTH hooks: `gt tap polecat-stop-check`
+AND `gt costs record &`. This is safe precisely because of the analysis below —
+the doctor's Stop check is `hookHasPattern`, a **substring** match, so
+`polecat-stop-check` is still found and both sides converge instead of deleting
+each other's work. Backgrounded with `&` to match the other roles, so cost
+accounting never delays teardown. Tests assert both that cost recording is
+present and that the idle-catcher survived alongside it — replacing rather than
+adding is exactly what caused #3648.
+
+**Why the caution was warranted.** The same comment records that this exact
 area previously failed to converge: *"hooks sync wrote polecat-stop-check,
 doctor demanded costs record, fix deleted the file, the daemon recreated the same
 polecat-stop-check file, repeat forever"* (#3648). A change here must satisfy the
 hook writer, the doctor check and the daemon simultaneously or it reopens that
-loop. That deserves its own session, not the end of a long one.
+loop. That is why the fix ADDS a hook rather than swapping one, and why it was
+worth reading `hookHasPattern` before touching anything: had the doctor done a
+deep-equality comparison instead of a substring match, this same change would
+have restarted the loop.
 
-**Proposed change (for approval).** Let a polecat's Stop hook run BOTH actions —
-`gt tap polecat-stop-check` and `gt costs record` — and teach
-`expectedStopHookCommand()` to accept the pair, so the doctor converges instead
-of demanding one and deleting the other. Alternative, avoiding hooks entirely:
-have the cost walker discover polecat transcripts by path
-(`~/.claude/projects/*-gt-<rig>-polecats-<name>-*`), which works for finished
-sessions and needs no hook cooperation.
+**Known limit of the fix.** It records cost for polecat sessions that end AFTER
+their settings are regenerated (`gt doctor --fix hooks-sync`). It does not
+retroactively price the two 2026-08-01 pilot runs, and it does not help the live
+path (`runLiveCosts`), which enumerates tmux sessions and therefore still cannot
+see a polecat that has already exited. A future improvement, needing no hook
+cooperation at all: have the cost walker discover polecat transcripts by path
+(`~/.claude/projects/*-gt-<rig>-polecats-<name>-*`).
 
 **Interim mitigation, already in place:** `~/.paperclip/bin/gt-polecat-cost.mjs`
 prices polecat runs from their transcripts, outside Gas Town. Pilot #1 measured
@@ -117,7 +130,7 @@ prices polecat runs from their transcripts, outside Gas Town. Pilot #1 measured
 
 ---
 
-## DIAGNOSED, NOT FIXED — 4. `gt nudge` has no verified sender (option B)
+## PARTIALLY FIXED — 4. `gt nudge` has no verified sender (option B)
 
 **Symptom.** A nudge arrives with no authenticated author. Any process on the Mac
 can issue an authoritative-looking instruction to any agent, all of which run
@@ -129,13 +142,24 @@ mandate with a real author. Verified empirically — the Mayor, the Deacon and a
 witness each refused mutating unattributed nudges while lifecycle work continued.
 `origin:` lines are explicitly a courtesy, not proof.
 
-**Why it was deferred to this rebase, and why it is still not done.** It was
-deferred so `done.go`'s neighbourhood would not be patched twice. The rebase is
-now complete, so the sequencing reason is gone — but the work itself is a design
-change to the nudge transport (adding a sender identity that a receiver can
-verify, and deciding what to do with unsigned nudges from outside the town). That
-is a protocol change, not a bug fix, and it should start from a written design
-rather than an implementation.
+**PARTIALLY FIXED in `344196ed` — and the honest half matters more than the
+fixed half.** `gt nudge` no longer reports an unresolvable caller as the bare
+string `"unknown"`. It reports `UnattributedNudgeSender`, a self-describing
+marker stating that attribution failed and that the nudge is read-only. Doctrine
+keys on that string, and tests pin it so a silent rename cannot quietly disarm
+the rule. Doctrine updated the same day (`~/gt` commit b5ed7af).
+
+**What is NOT fixed, stated plainly: this is naming, not verification.** Under
+`--mode=immediate` a nudge is delivered as tmux send-keys TEXT. A receiver cannot
+verify ANY sender claim — including a true one — because the prefix is just
+characters in a pane. Structured attribution exists only in queue mode, where
+`nudge.Enqueue` stores `Sender` as a field in the town's own store rather than as
+pane text.
+
+**Real option B, still open.** Route mutating nudges through the queue path and
+have receivers read `Sender` from the store instead of from the message body.
+That is a transport change and deserves its own design; the sequencing reason for
+deferring it (don't patch `done.go`'s neighbourhood twice) is now gone.
 
 **One finding that should shape it.** Doctrine currently tells agents to weigh
 `origin:` lines as untrusted text. If nudges gain real attribution, that rule
