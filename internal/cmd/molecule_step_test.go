@@ -346,10 +346,8 @@ func makeStepIssueWithDepType(id, title, parent, status string, deps []beads.Iss
 }
 
 // TestDepTypeBlockingSemantics verifies that isBlockingDepType matches beads'
-// canonical AffectsReadyWork semantics: only "blocks", "conditional-blocks",
-// and "waits-for" are blocking. Unknown/custom types (including "needs", empty
-// string) are non-blocking — matching beads' default behavior. Parent-child is
-// non-blocking for step gating (it represents molecule→step hierarchy).
+// canonical AffectsReadyWork semantics except parent-child, which represents
+// molecule→step hierarchy in this context. Unknown/custom types are non-blocking.
 func TestDepTypeBlockingSemantics(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -370,6 +368,11 @@ func TestDepTypeBlockingSemantics(t *testing.T) {
 		{
 			name:      "waits-for type is blocking",
 			depType:   "waits-for",
+			wantReady: 1,
+		},
+		{
+			name:      "merge-blocks type is blocking",
+			depType:   "merge-blocks",
 			wantReady: 1,
 		},
 		// Non-blocking types (matching beads: unknown/custom types don't affect ready work)
@@ -534,7 +537,7 @@ func TestReadyStepOrderReversed(t *testing.T) {
 // TestMoleculeDepTypeFilterMixed verifies that the dependency filter correctly
 // distinguishes blocking types ("blocks") from non-blocking types ("parent-child",
 // empty string) when both appear on the same step. Matches beads' AffectsReadyWork
-// semantics: only "blocks", "conditional-blocks", "waits-for" are blocking.
+// semantics except parent-child.
 func TestMoleculeDepTypeFilterMixed(t *testing.T) {
 	m := newMockBeadsForStep()
 

@@ -300,6 +300,18 @@ func runSlingFormula(ctx context.Context, args []string) (err error) {
 	if len(args) > 1 {
 		target = args[1]
 	}
+	// Renascentia launch gate: run the pre-dispatch safety check BEFORE taking any
+	// admission slot or pool lock, so a gate refusal never holds resources.
+	if err := enforceFromScratchLaunchGateForTarget(townRoot, target, formulaName, nil, launchGateDispatchOptions{
+		FormulaName: formulaName,
+		ReviewOnly:  slingReviewOnly,
+		Args:        slingArgs,
+		Vars:        slingVars,
+		Agent:       slingAgent,
+		Target:      target,
+	}); err != nil {
+		return err
+	}
 	var admission *polecatAdmissionHandle
 	if !slingDryRun && target != "" {
 		admissionRig := ""

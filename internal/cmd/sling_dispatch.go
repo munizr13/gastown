@@ -132,11 +132,11 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 		return result, fmt.Errorf("could not get bead info: %w", err)
 	}
 
-	// Guard against dispatching closed/tombstone beads (defense-in-depth).
-	// Not bypassed by --force — if you need to re-dispatch, reopen the bead first.
-	if info.Status == "closed" || info.Status == "tombstone" {
-		result.ErrMsg = "already " + info.Status
-		return result, fmt.Errorf("bead %s is %s (work already completed)", params.BeadID, info.Status)
+	// Guard against dispatching closed, blocked, or dependency-gated beads.
+	// Not bypassed by --force — unblock/reopen the bead before dispatching.
+	if err := validateBeadDispatchReady(params.BeadID, info); err != nil {
+		result.ErrMsg = dispatchReadinessErrMsg(info)
+		return result, err
 	}
 
 	// Save explicit force state before dead-agent auto-force, so the deferred
@@ -163,6 +163,45 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 	if isDeferredBead(info) && !explicitForce {
 		result.ErrMsg = "deferred"
 		return result, fmt.Errorf("bead %s is deferred (use --force to override)", params.BeadID)
+	}
+
+	if params.RigName != "" {
+		if err := enforceFromScratchLaunchGate(townRoot, params.RigName, params.BeadID, info, launchGateDispatchOptions{
+			FormulaName: params.FormulaName,
+			ReviewOnly:  params.ReviewOnly,
+			Args:        params.Args,
+			Vars:        params.Vars,
+			Mode:        params.Mode,
+			Agent:       params.Agent,
+			Target:      params.RigName,
+		}); err != nil {
+			result.ErrMsg = err.Error()
+			return result, err
+		}
+	}
+
+	actionCode := gbrainWorkerLaunchActionCodeFromBead(
+		info,
+		params.BeadID,
+		params.RigName,
+		params.FormulaName,
+		params.Args,
+		strings.Join(params.Vars, " "),
+		params.Mode,
+		params.Agent,
+	)
+	workerRole := params.Agent
+	if workerRole == "" && params.RigName != "" {
+		workerRole = fmt.Sprintf("%s/polecats/_", params.RigName)
+	}
+	if err := enforceGBrainWorkerLaunchDecision(gbrainWorkerLaunchDecisionRequest{
+		TargetID:     params.BeadID,
+		ActionCode:   actionCode,
+		WorkerSystem: "gastown",
+		WorkerRole:   workerRole,
+	}); err != nil {
+		result.ErrMsg = err.Error()
+		return result, err
 	}
 
 	if params.RigName != "" {

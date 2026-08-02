@@ -188,8 +188,8 @@ func runEscalate(cmd *cobra.Command, args []string) error {
 		statuses = append(statuses, status)
 	}
 
-	// Process external notification actions (email:, sms:, slack, log)
-	statuses = append(statuses, executeExternalActions(actions, escalationConfig, issue.ID, severity, description, townRoot)...)
+	// Process external notification actions (email:, sms:, slack, webhook:, log)
+	statuses = append(statuses, executeExternalActions(actions, escalationConfig, issue.ID, severity, description, escalateReason, townRoot)...)
 
 	// Log to activity feed
 	payload := events.EscalationPayload(issue.ID, agentID, strings.Join(targets, ","), description)
@@ -682,8 +682,8 @@ func extractMailTargetsFromActions(actions []string) []string {
 	return targets
 }
 
-// executeExternalActions processes external notification actions (email:, sms:, slack, log).
-func executeExternalActions(actions []string, cfg *config.EscalationConfig, beadID, severity, description, townRoot string) []deliveryStatus {
+// executeExternalActions processes external notification actions (email:, sms:, slack, webhook:, log).
+func executeExternalActions(actions []string, cfg *config.EscalationConfig, beadID, severity, description, reason, townRoot string) []deliveryStatus {
 	statuses := []deliveryStatus{}
 	for _, action := range actions {
 		switch {
@@ -737,6 +737,25 @@ func executeExternalActions(actions []string, cfg *config.EscalationConfig, bead
 				} else {
 					status.RuntimeNotified = true
 					fmt.Printf("  💬 Posted to Slack\n")
+				}
+			}
+			statuses = append(statuses, status)
+
+		case action == "webhook:openclaw":
+			status := deliveryStatus{Channel: "webhook", Target: "openclaw", Severity: severity}
+			if cfg.Contacts.OpenClawWebhook == "" {
+				status.Warning = "contacts.openclaw_webhook not configured"
+				style.PrintWarning("webhook action '%s' skipped: contacts.openclaw_webhook not configured in settings/escalation.json", action)
+			} else if cfg.Contacts.OpenClawToken == "" {
+				status.Warning = "contacts.openclaw_token not configured"
+				style.PrintWarning("webhook action '%s' skipped: contacts.openclaw_token not configured in settings/escalation.json", action)
+			} else {
+				if err := sendEscalationOpenClaw(cfg, beadID, severity, description, reason); err != nil {
+					status.Error = err.Error()
+					style.PrintWarning("openclaw webhook failed: %v", err)
+				} else {
+					status.RuntimeNotified = true
+					fmt.Printf("  🪝 Posted to OpenClaw\n")
 				}
 			}
 			statuses = append(statuses, status)
@@ -819,6 +838,45 @@ func sendEscalationSlack(cfg *config.EscalationConfig, beadID, severity, descrip
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("slack webhook returned %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
+// sendEscalationOpenClaw posts a Gas Town escalation into OpenClaw hook ingress.
+func sendEscalationOpenClaw(cfg *config.EscalationConfig, beadID, severity, description, reason string) error {
+	bodyText := reason
+	if strings.TrimSpace(bodyText) == "" {
+		bodyText = description
+	}
+	payload := map[string]string{
+		"id":       beadID,
+		"severity": severity,
+		"subject":  description,
+		"body": fmt.Sprintf("%s\n\nAcknowledge: gt escalate ack %s",
+			bodyText, beadID),
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshaling openclaw payload: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, cfg.Contacts.OpenClawWebhook, strings.NewReader(string(body)))
+	if err != nil {
+		return fmt.Errorf("creating openclaw webhook request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+cfg.Contacts.OpenClawToken)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("posting to openclaw webhook: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("openclaw webhook returned %d: %s", resp.StatusCode, string(respBody))
 	}
 	return nil
 }

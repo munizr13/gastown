@@ -72,6 +72,19 @@ func runBatchSling(beadIDs []string, rigName string, townBeadsDir string) error 
 	// Issue #288: Auto-apply formula for batch sling (resolved via flags)
 	formulaName := resolveFormula(slingFormula, slingHookRawBead, filepath.Dir(townBeadsDir), rigName)
 
+	// Preflight all beads before spawning anything. Batch sling is used by
+	// workflow/convoy dispatch, so one dependency-gated bead must fail the whole
+	// batch instead of creating a partial set of polecats.
+	for _, beadID := range beadIDs {
+		info, err := getBeadInfo(beadID)
+		if err != nil {
+			return fmt.Errorf("checking bead %s status: %w", beadID, err)
+		}
+		if err := validateBeadDispatchReady(beadID, info); err != nil {
+			return err
+		}
+	}
+
 	if slingDryRun {
 		fmt.Printf("%s Batch slinging %d beads to rig '%s':\n", style.Bold.Render("🎯"), len(beadIDs), rigName)
 		if formulaName != "" {

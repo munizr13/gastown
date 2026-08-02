@@ -353,8 +353,14 @@ the work in one session if possible and submit to that rig's Refinery immediatel
 ```
 
 This runs the full pipeline autonomously: structured PRD → 6-leg parallel review →
-human clarification gate → implementation plan → 5-leg parallel plan review →
-human approval gate → beads with dependency graph.
+Mayor/CTO clarification gate → implementation plan → 5-leg parallel plan review →
+beads with dependency graph.
+
+At the clarification gate, the crew/Mayor must prepare a CTO-ready approval
+packet and escalate it automatically. The CTO asks the human with the high-level
+picture, exact decisions to approve, impact, risks, and requested reply format,
+then relays the answer back to Mayor/Gastown. Do not ask the human directly from
+the crew worker and do not depend on an operator to bridge the approval.
 
 **Trigger this suggestion when the human:**
 - Describes a feature, idea, or problem and says "let's build this" / "plan this out"

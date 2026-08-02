@@ -227,11 +227,27 @@ func TestSubstituteFormulaVars(t *testing.T) {
 	vars := map[string]interface{}{
 		"problem": "First paragraph.\n\nSecond paragraph.",
 		"context": "existing code",
+		"output": map[string]interface{}{
+			"directory": ".prd-reviews/abc123",
+		},
 	}
-	got := substituteFormulaVars("Problem: {{ problem }}\nContext: {{context}}\nKeep: {{review_id}}", vars)
-	want := "Problem: First paragraph.\n\nSecond paragraph.\nContext: existing code\nKeep: {{review_id}}"
+	got := substituteFormulaVars("Problem: {{ problem }}\nDot: {{.problem}}\nContext: {{context}}\nOutput: {{.output.directory}}\nKeep: {{review_id}}", vars)
+	want := "Problem: First paragraph.\n\nSecond paragraph.\nDot: First paragraph.\n\nSecond paragraph.\nContext: existing code\nOutput: .prd-reviews/abc123\nKeep: {{review_id}}"
 	if got != want {
 		t.Fatalf("substituteFormulaVars() = %q, want %q", got, want)
+	}
+}
+
+func TestUnresolvedDottedFormulaVars(t *testing.T) {
+	t.Parallel()
+
+	got := unresolvedDottedFormulaVars("ok {{review_id}} bad {{.output.directory}} again {{.output.directory}} also {{ .problem }}")
+	want := []string{"{{.output.directory}}", "{{ .problem }}"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unresolvedDottedFormulaVars() = %#v, want %#v", got, want)
+	}
+	if err := validateNoUnresolvedDottedFormulaVars("step one", "still {{.output.synthesis}}"); err == nil {
+		t.Fatalf("expected unresolved dotted variable error")
 	}
 }
 

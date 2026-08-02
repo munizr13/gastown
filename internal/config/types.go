@@ -1672,6 +1672,7 @@ type EscalationConfig struct {
 	//   - "email:human" → Send email to contacts.human_email
 	//   - "sms:human"   → Send SMS to contacts.human_sms
 	//   - "slack"       → Post to contacts.slack_webhook
+	//   - "webhook:openclaw" → Post to contacts.openclaw_webhook
 	//   - "log"         → Write to escalation log file
 	Routes map[string][]string `json:"routes"`
 
@@ -1692,15 +1693,17 @@ type EscalationConfig struct {
 
 // EscalationContacts contains contact information for external notification channels.
 type EscalationContacts struct {
-	HumanEmail   string `json:"human_email,omitempty"`   // email address for email:human action
-	HumanSMS     string `json:"human_sms,omitempty"`     // phone number for sms:human action
-	SlackWebhook string `json:"slack_webhook,omitempty"` // webhook URL for slack action
-	SMTPHost     string `json:"smtp_host,omitempty"`     // SMTP server host (e.g. "smtp.gmail.com")
-	SMTPPort     string `json:"smtp_port,omitempty"`     // SMTP server port (default "587")
-	SMTPFrom     string `json:"smtp_from,omitempty"`     // sender address for email notifications
-	SMTPUser     string `json:"smtp_user,omitempty"`     // SMTP auth username (optional)
-	SMTPPass     string `json:"smtp_pass,omitempty"`     // SMTP auth password (optional)
-	SMSWebhook   string `json:"sms_webhook,omitempty"`   // webhook URL for SMS delivery (e.g. Twilio)
+	HumanEmail      string `json:"human_email,omitempty"`      // email address for email:human action
+	HumanSMS        string `json:"human_sms,omitempty"`        // phone number for sms:human action
+	SlackWebhook    string `json:"slack_webhook,omitempty"`    // webhook URL for slack action
+	OpenClawWebhook string `json:"openclaw_webhook,omitempty"` // OpenClaw hook URL for webhook:openclaw action
+	OpenClawToken   string `json:"openclaw_token,omitempty"`   // OpenClaw hooks.token for webhook:openclaw action
+	SMTPHost        string `json:"smtp_host,omitempty"`        // SMTP server host (e.g. "smtp.gmail.com")
+	SMTPPort        string `json:"smtp_port,omitempty"`        // SMTP server port (default "587")
+	SMTPFrom        string `json:"smtp_from,omitempty"`        // sender address for email notifications
+	SMTPUser        string `json:"smtp_user,omitempty"`        // SMTP auth username (optional)
+	SMTPPass        string `json:"smtp_pass,omitempty"`        // SMTP auth password (optional)
+	SMSWebhook      string `json:"sms_webhook,omitempty"`      // webhook URL for SMS delivery (e.g. Twilio)
 }
 
 // CurrentEscalationVersion is the current schema version for EscalationConfig.

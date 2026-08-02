@@ -14,7 +14,7 @@ They'll pour this formula and it takes over from there.
 [prd-review]     6 polecats review PRD in parallel (mol-prd-review convoy)
                  → requirements, gaps, ambiguity, feasibility, scope, stakeholders
       ↓
-[human-clarify]  Agent presents consolidated questions, you answer
+[human-clarify]  Mayor prepares a CTO approval packet; CTO asks you and relays answer
       ↓
 [generate-plan]  6 polecats design the implementation in parallel (design convoy)
                  → api, data, ux, scale, security, integration
@@ -33,10 +33,13 @@ They'll pour this formula and it takes over from there.
 ## Human Gate
 
 There is one human gate:
-1. **After PRD review**: You answer clarifying questions before plan generation
+1. **After PRD review**: Mayor escalates a CTO-ready approval packet. The CTO
+   gives you the high-level picture, exact approval items, impact, risks, and
+   requested reply format, then relays your approval or edits back to Mayor.
 
-This is the only step requiring your input. The 6-round iterative plan review
-runs autonomously — polecats review, orchestrator applies fixes, repeat.
+This is the only step requiring your input, and it must run through the automatic
+Mayor → CTO → human → CTO → Mayor/Gastown path. The 6-round iterative plan
+review runs autonomously — polecats review, orchestrator applies fixes, repeat.
 
 ## Orchestration Model
 
@@ -157,52 +160,104 @@ needs = ["prd-review"]
 target = "mayor"
 interactive = true
 description = """
-Present the consolidated questions to the human and capture their answers.
+Prepare a CTO-ready approval packet, escalate it to the CTO, and wait for the
+CTO to relay the human's answer back. Do not ask the human directly from this
+worker and do not rely on an operator to manually bridge the question.
 
-This is a human gate. The molecule pauses here until you have answers.
+This is a human gate. The molecule pauses here until the CTO has asked the
+human and returned explicit approval or edits.
 
 **1. Read the synthesis report:**
 ```bash
 cat .prd-reviews/<review-id>/prd-review.md
 ```
 
-**2. Present the critical questions directly in conversation:**
-
-Output the following to the human (they're in this chat session with you):
-
-```
-## PRD Review Complete: {{problem}}
-
-Full report: .prd-reviews/<review-id>/prd-review.md
-
-### Overall PRD Health
-<paste executive summary from synthesis>
-
-### Questions Needing Your Input Before We Proceed
-<paste the 'Before You Build: Critical Questions' section from synthesis>
-
----
-Please reply with numbered answers matching the questions above.
-I'll incorporate your answers and kick off implementation plan generation.
+Also read the draft PRD:
+```bash
+cat .prd-reviews/{{review_id}}/prd-draft.md
 ```
 
-**3. Await reply:**
-Wait for the human to respond in this conversation. They will type their
-answers directly. Do NOT use `gt mail inbox` — the reply comes in chat.
+**2. Build the CTO approval packet:**
 
-**4. Incorporate answers:**
+Create `.prd-reviews/{{review_id}}/human-clarification-packet.md`.
+The packet must be useful enough for the CTO to ask the human without extra
+operator interpretation. Use this structure:
+
+```markdown
+# CLARIFY: {{problem}}
+
+## High-Level Picture
+<2-5 bullets explaining what product/process is being designed, what stage the
+planning molecule is at, and why this approval is required before design starts.>
+
+## Decision Needed From Rodrigo
+<One direct approval question. Example: "Do you approve the B1-B7 clarifications
+below as the contract for the design molecule, or should any item be edited?">
+
+## What Rodrigo Is Approving
+<Numbered decisions. Preserve any B1/B2/etc labels from the PRD review. For each
+item include: decision, operational impact, and what remains blocked if unknown.>
+
+## Impact If Approved
+<What Gastown will do next: update PRD, run design convoy, keep unavailable
+external integrations as blockers rather than reducing scope, etc.>
+
+## Risks / Scope Boundaries
+<Anything the CTO should call out explicitly before asking for approval.>
+
+## Requested Reply Format
+- "Approved as written"
+- or "Approved with edits: B2 ..., B6 ..."
+```
+
+**3. Escalate Mayor -> CTO automatically:**
+
+Use `gt escalate` so the configured Mayor/OpenClaw route wakes the CTO. Read the
+packet from stdin; never squeeze it through `-m` or shell-quoted strings.
+
+```bash
+gt escalate "CLARIFY: {{problem}}" \\
+  --severity high \\
+  --source "mayor/" \\
+  --stdin < .prd-reviews/{{review_id}}/human-clarification-packet.md
+```
+
+If you know the current clarification bead ID, also pass `--related <bead-id>`.
+
+**4. Await CTO response, not direct human chat:**
+
+The CTO is responsible for:
+- reading the CLARIFY packet,
+- asking Rodrigo with the high-level picture plus the detailed approval items,
+- collecting approval or edits,
+- replying back to Mayor/Gastown with the approved answers.
+
+Check Mayor mail and escalation status for the CTO response:
+```bash
+gt mail inbox mayor/
+gt escalate list
+```
+
+Do not close this step, update the PRD, or start the design convoy until the CTO
+has relayed Rodrigo's explicit approval or edits. If the CTO asks for a clearer
+packet, improve `.prd-reviews/{{review_id}}/human-clarification-packet.md` and
+re-escalate with the same subject and `--related <bead-id>`.
+
+**5. Incorporate approved answers:**
 Update the PRD draft at `.prd-reviews/{{review_id}}/prd-draft.md` with the
-human's answers. Add an "Answers and Clarifications" section at the bottom:
+approved answers. Add an "Answers and Clarifications" section at the bottom:
 
 ```markdown
 ## Clarifications from Human Review
 
 **Q: <question>**
-A: <human's answer>
+A: <approved answer relayed by CTO>
 ...
 ```
 
-**Exit criteria:** Human has answered the critical questions. Updated PRD draft exists."""
+**Exit criteria:** `.prd-reviews/{{review_id}}/human-clarification-packet.md`
+exists, CTO has relayed Rodrigo's approval or edits, and the PRD draft contains
+the approved "Clarifications from Human Review" section."""
 
 [[steps]]
 id = "generate-plan"
@@ -761,8 +816,19 @@ Output:
 - Kick off agent swarm: gt sling <first-bead-id> <rig>
 ```
 
+**7. Write bead creation evidence:**
+
+Create `.gastown/launch-gate/beads-created.md` with:
+- the tracking epic ID
+- every created task bead ID and title
+- dependency edges added
+- output from `bd blocked`
+- output from `bd ready`
+
+This file is required by Gastown's from-scratch launch gate.
+
 **Exit criteria:** All plan tasks exist as beads. Dependencies are correctly wired.
-Epic created. Human notified."""
+Epic created. Human notified. `.gastown/launch-gate/beads-created.md` exists."""
 
 [[steps]]
 id = "verify-beads-pass-1"
@@ -821,7 +887,15 @@ bd dep add <new-bead> <dependency-bead>
 **5. Report:**
 Log what you found and created. If no gaps: say so explicitly.
 
-**Exit criteria:** All plan items have corresponding beads after this pass."""
+Also write `.gastown/launch-gate/verify-beads-pass-1.md` with:
+- plan sections checked
+- gaps found
+- beads created or updated
+- dependency changes
+- remaining concerns
+
+**Exit criteria:** All plan items have corresponding beads after this pass.
+`.gastown/launch-gate/verify-beads-pass-1.md` exists."""
 
 [[steps]]
 id = "verify-beads-pass-2"
@@ -850,7 +924,11 @@ requirements that only become visible after the first pass filled gaps.
 - Do any beads have descriptions that are too vague to be actionable?
   If so, update them with specifics from the plan.
 
-**Exit criteria:** Second pass complete. Any new gaps filled."""
+Write `.gastown/launch-gate/verify-beads-pass-2.md` with the same evidence
+structure as pass 1.
+
+**Exit criteria:** Second pass complete. Any new gaps filled.
+`.gastown/launch-gate/verify-beads-pass-2.md` exists."""
 
 [[steps]]
 id = "verify-beads-pass-3"
@@ -896,8 +974,68 @@ Output:
 <HIGH if 0 gaps in pass 3, MEDIUM if 1-2 gaps found in pass 3>
 ```
 
+**5. Write final verification artifact:**
+
+Create `.gastown/launch-gate/verify-beads-pass-3.md` with:
+- final plan-to-beads comparison
+- final gap count
+- random bead spot-checks
+- `bd blocked`, `bd ready`, and `bd stats` output
+- final confidence
+
+If final gap count is not zero, do not write an allow receipt. Fix the gaps and
+repeat this pass first.
+
+**6. Write the launch-gate receipt:**
+
+After final gap count is zero, create `.gastown/launch-gate/receipt.json`.
+Use this schema exactly, replacing placeholders with real IDs and counts:
+
+```json
+{
+  "contract": "gastown.from_scratch_launch_gate.receipt.v1",
+  "decision": "allow",
+  "approved_by": "mayor",
+  "paperclip_issue": "",
+  "gastown_bead": "<tracking-epic-or-planning-bead-id>",
+  "approved_prd": {
+    "review_id": "{{review_id}}",
+    "draft_path": ".prd-reviews/{{review_id}}/prd-draft.md",
+    "review_path": ".prd-reviews/{{review_id}}/prd-review.md",
+    "human_clarification": true
+  },
+  "design": {
+    "design_id": "<design-id>",
+    "design_doc": ".designs/<design-id>/design-doc.md"
+  },
+  "plan_reviews": {
+    "prd_alignment": [
+      ".plan-reviews/{{review_id}}/prd-align-round-1.md",
+      ".plan-reviews/{{review_id}}/prd-align-round-2.md",
+      ".plan-reviews/{{review_id}}/prd-align-round-3.md"
+    ],
+    "plan_review": [
+      ".plan-reviews/{{review_id}}/review-round-1.md",
+      ".plan-reviews/{{review_id}}/review-round-2.md",
+      ".plan-reviews/{{review_id}}/review-round-3.md"
+    ]
+  },
+  "beads": {
+    "created_artifact": ".gastown/launch-gate/beads-created.md",
+    "epic_id": "<tracking-epic-id>",
+    "created_count": <task-bead-count>,
+    "verification_passes": [
+      {"pass": 1, "artifact": ".gastown/launch-gate/verify-beads-pass-1.md"},
+      {"pass": 2, "artifact": ".gastown/launch-gate/verify-beads-pass-2.md"},
+      {"pass": 3, "artifact": ".gastown/launch-gate/verify-beads-pass-3.md"}
+    ]
+  }
+}
+```
+
 **Exit criteria:** Three passes complete. Zero gaps in final pass. Human notified
-with coverage report."""
+with coverage report. `.gastown/launch-gate/receipt.json` exists and points to
+all PRD, design, review, bead creation, and bead verification artifacts."""
 
 [vars]
 [vars.review_id]
