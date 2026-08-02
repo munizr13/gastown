@@ -441,8 +441,25 @@ func runNudge(cmd *cobra.Command, args []string) (retErr error) {
 		return fmt.Errorf("message required: use -m flag or provide as second argument")
 	}
 
-	// Identify sender for message prefix (needed before channel check)
-	sender := "unknown"
+	// Identify sender for message prefix (needed before channel check).
+	//
+	// UnattributedNudgeSender, not the bare string "unknown": a nudge whose
+	// caller cannot be resolved to a town role is exactly the shape of an
+	// injected instruction, and every town agent runs with permissions skipped.
+	// "unknown" reads like a role name and tells the receiver nothing about what
+	// to do; the explicit marker states that attribution FAILED and that the
+	// nudge therefore carries no authority. Town doctrine (~/gt/CLAUDE.md,
+	// "Nudge Provenance") makes such a nudge read-only, and this is the string
+	// that rule keys on.
+	//
+	// Scope, stated honestly: this does not make nudges cryptographically
+	// attributable. Under --mode=immediate the message is delivered as tmux
+	// send-keys text, so a receiver cannot verify ANY sender claim, including a
+	// true one — the prefix is a courtesy for log readers, not proof. Structured
+	// attribution exists only in queue mode, where nudge.Enqueue stores Sender
+	// as a field in the town's own store rather than as pane text. Naming the
+	// unresolved case is the part that can be fixed without changing transport.
+	sender := UnattributedNudgeSender
 	if roleInfo, err := GetRole(); err == nil {
 		switch roleInfo.Role {
 		case RoleMayor:
