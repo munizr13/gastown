@@ -1698,6 +1698,19 @@ func (e *Engineer) closeMRWithReason(mr *MRInfo, closeReason string, mergeCommit
 	if normalizedMRCloseReason(closeReason) == string(CloseReasonMerged) {
 		expected = mergeRequestFromMRInfo(mr)
 	}
+	// Mirror the MR's review record onto the source issue BEFORE closing it.
+	//
+	// MR beads are created Ephemeral, which routes them to the wisps table
+	// (GH#2446) — and wisps are compacted away. On 2026-08-01 an MR bead
+	// carrying a witness review, a refinery hold and the rulings that
+	// authorised the merge was readable 39 minutes after the merge and gone
+	// after that, so "why was this merged?" became unanswerable. The source
+	// issue is durable, so the record is copied there while it still exists.
+	//
+	// Best-effort by design: a mirroring failure must never block a merge from
+	// being recorded as closed. Failures are reported, not returned.
+	e.mirrorMRRecordToSourceIssue(mr, closeReason, commit)
+
 	result, err := closeTerminalMR(e.beads, mr.ID, terminalMRCloseOptions{
 		Reason:        closeReason,
 		MergeCommit:   commit,
@@ -1715,6 +1728,72 @@ func (e *Engineer) closeMRWithReason(mr *MRInfo, closeReason string, mergeCommit
 		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to clear agent bead %s active_mr: %v\n", result.AgentBead, result.AgentActiveMRClearErr)
 	}
 	return nil
+}
+
+// mirrorMRRecordToSourceIssue copies an MR bead's comments onto its source
+// issue so the merge audit trail outlives the ephemeral wisp. See the call site
+// in closeMRWithReason for why this exists.
+func (e *Engineer) mirrorMRRecordToSourceIssue(mr *MRInfo, closeReason, mergeCommit string) {
+	// This writes EVIDENCE, not state a merge depends on. It must therefore be
+	// incapable of affecting the outcome of a close — including by panicking.
+	// Not hypothetical: the beads client is backed by a Storage interface whose
+	// implementations do not all support comments (a partial test store made
+	// Comments() nil-dereference here), and a storage backend that cannot serve
+	// comments must degrade to "no audit mirror", never to "merge not closed".
+	defer func() {
+		if r := recover(); r != nil {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: MR record mirror panicked and was contained (MR %s): %v\n", mr.ID, r)
+		}
+	}()
+
+	if mr == nil || e.beads == nil {
+		return
+	}
+	source := strings.TrimSpace(mr.SourceIssue)
+	if source == "" {
+		return // nothing durable to mirror onto
+	}
+
+	comments, err := e.beads.Comments(mr.ID)
+	if err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not read MR %s comments to mirror onto %s: %v\n", mr.ID, source, err)
+		return
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "MERGE RECORD for %s (mirrored from ephemeral MR bead %s, which will be compacted away).\n", source, mr.ID)
+	fmt.Fprintf(&b, "outcome: %s\n", closeReason)
+	if strings.TrimSpace(mergeCommit) != "" {
+		fmt.Fprintf(&b, "merge commit: %s\n", strings.TrimSpace(mergeCommit))
+	}
+	if strings.TrimSpace(mr.Branch) != "" {
+		fmt.Fprintf(&b, "branch: %s -> %s\n", strings.TrimSpace(mr.Branch), strings.TrimSpace(mr.Target))
+	}
+	if strings.TrimSpace(mr.CommitSHA) != "" {
+		fmt.Fprintf(&b, "commit_sha: %s\n", strings.TrimSpace(mr.CommitSHA))
+	}
+	if strings.TrimSpace(mr.Worker) != "" {
+		fmt.Fprintf(&b, "worker: %s\n", strings.TrimSpace(mr.Worker))
+	}
+
+	if len(comments) == 0 {
+		b.WriteString("\n(no comments were recorded on the MR)\n")
+	} else {
+		fmt.Fprintf(&b, "\n--- %d comment(s) from the merge request ---\n", len(comments))
+		for _, c := range comments {
+			author := strings.TrimSpace(c.Author)
+			if author == "" {
+				author = "unknown"
+			}
+			fmt.Fprintf(&b, "\n[%s] %s:\n%s\n", strings.TrimSpace(c.CreatedAt), author, strings.TrimSpace(c.Text))
+		}
+	}
+
+	if err := e.beads.AddComment(source, b.String()); err != nil {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: could not mirror MR %s record onto %s: %v\n", mr.ID, source, err)
+		return
+	}
+	_, _ = fmt.Fprintf(e.output, "[Engineer] Mirrored MR %s record onto source issue %s (%d comment(s))\n", mr.ID, source, len(comments))
 }
 
 func mergeRequestFromMRInfo(mr *MRInfo) *MergeRequest {
