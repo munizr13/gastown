@@ -1072,7 +1072,14 @@ func addOutputTemplateContext(ctx map[string]interface{}, outputDir, synthesisFi
 	}
 }
 
-var formulaVarPlaceholder = regexp.MustCompile(`\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}`)
+// Matches both plain `{{name}}` and dotted `{{.name}}` / `{{.a.b}}` placeholders.
+// REBASE NOTE (2026-08-02): upstream's version of this regex has no leading `\.?`
+// and no dotted-path group. Taking upstream's during the 481-commit rebase silently
+// stopped substituteFormulaVars from substituting dotted placeholders — formulas
+// rendered literal `{{.problem}}` and `{{.output.directory}}` into their output.
+// Ours is a strict superset, so it serves both call sites. Covered by
+// TestSubstituteFormulaVars and TestFormulaRunExamplesUseSetVars.
+var formulaVarPlaceholder = regexp.MustCompile(`\{\{\s*\.?([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\s*\}\}`)
 
 func parseFormulaSetVars(f *formula.Formula, setArgs []string) map[string]interface{} {
 	vars := parseSetVars(setArgs)

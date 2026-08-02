@@ -1005,8 +1005,8 @@ Use this schema exactly, replacing placeholders with real IDs and counts:
     "human_clarification": true
   },
   "design": {
-    "design_id": "<design-id>",
-    "design_doc": ".designs/<design-id>/design-doc.md"
+    "design_id": "<design-review-id>",
+    "design_doc": ".designs/<design-review-id>/design-doc.md"
   },
   "plan_reviews": {
     "prd_alignment": [
