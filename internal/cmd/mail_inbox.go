@@ -102,7 +102,7 @@ func runMailInbox(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  %s %s %s%s%s%s\n", indexStr, readMarker, msg.Subject, typeMarker, priorityMarker, wispMarker)
 		fmt.Printf("      %s from %s\n",
 			style.Dim.Render(msg.ID),
-			msg.From)
+			senderForDisplay(msg.From))
 		fmt.Printf("      %s\n",
 			style.Dim.Render(msg.Timestamp.Local().Format("2006-01-02 15:04")))
 	}
