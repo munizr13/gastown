@@ -70,6 +70,25 @@ const (
 	// DiskSpaceCriticalPercent is the usage percentage above which operations
 	// should be blocked regardless of absolute free space.
 	DiskSpaceCriticalPercent float64 = 95.0
+
+	// DiskSpaceWarningPercent is the usage percentage at which warnings are
+	// emitted, mirroring DiskSpaceCriticalPercent the way DiskSpaceWarningMB
+	// mirrors DiskSpaceMinimumMB.
+	//
+	// Without it the warning is UNREACHABLE on any normal disk, because the two
+	// levels were measured in different units: CRITICAL triggers on percentage
+	// OR absolute, while WARNING triggered on absolute only. On a 926 GB volume
+	// the 95% block leaves ~46 GB free — 46x more than the 1 GB the warning
+	// needed — so the system went straight from OK to BLOCKED with no warning
+	// state. The warning could only precede the block on volumes <= ~20 GB.
+	//
+	// Observed 2026-08-02: a town stopped spawning polecats with no prior
+	// warning. Dispatch halts while every agent stays alive and healthy, so
+	// nothing looks wrong — the factory just quietly stops taking new work.
+	//
+	// 92% gives roughly a 3-percentage-point band to act in (~28 GB on a 926 GB
+	// volume) before the hard block.
+	DiskSpaceWarningPercent float64 = 92.0
 )
 
 // DiskSpaceLevel represents the severity of disk space status.
@@ -115,10 +134,16 @@ func CheckDiskSpace(path string) (DiskSpaceLevel, string, error) {
 			nil
 	}
 
-	if availMB < DiskSpaceWarningMB {
+	// Warning mirrors the critical test: absolute OR percentage. Checking only
+	// the absolute floor made this branch dead code on any disk bigger than
+	// ~20 GB (see DiskSpaceWarningPercent). The CRITICAL branch above is
+	// deliberately unchanged — this can only turn an OK into a WARNING, never
+	// alter what blocks.
+	if availMB < DiskSpaceWarningMB || info.UsedPercent >= DiskSpaceWarningPercent {
 		return DiskSpaceWarning,
-			fmt.Sprintf("WARNING: only %s free (%.1f%% used) — disk space low, reduce workload",
-				info.AvailableHuman(), info.UsedPercent),
+			fmt.Sprintf("WARNING: only %s free (%.1f%% used) — disk space low, reduce workload "+
+				"(operations block at %.0f%%)",
+				info.AvailableHuman(), info.UsedPercent, DiskSpaceCriticalPercent),
 			nil
 	}
 
