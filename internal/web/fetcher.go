@@ -1126,7 +1126,7 @@ func (f *LiveConvoyFetcher) FetchMail() ([]MailRow, error) {
 			FromRaw:   m.CreatedBy,
 			To:        to,
 			Subject:   m.Title,
-			Timestamp: timestamp.Format("15:04"),
+			Timestamp: timestamp.Local().Format("15:04"),
 			Age:       age,
 			Priority:  priorityStr,
 			Type:      msgType,
@@ -1158,7 +1158,12 @@ func formatMailAge(d time.Duration) string {
 }
 
 // formatTimestamp formats a time as "Jan 26, 3:45 PM" (or "Jan 26 2006, 3:45 PM" if different year).
+// Stored timestamps are RFC3339 UTC; the dashboard is read by a human in local
+// time, so convert before rendering — otherwise every stored-timestamp field
+// runs hours behind the wall clock while Now()-based fields look correct
+// (renascentia 2026-08-29: timeline showed 4:11 PM at 18:11 CEST).
 func formatTimestamp(t time.Time) string {
+	t = t.Local()
 	now := time.Now()
 	if t.Year() != now.Year() {
 		return t.Format("Jan 2 2006, 3:04 PM")
