@@ -1820,9 +1820,14 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			if issueID != "" {
 				oldMRs, findErr := bd.FindOpenMRsForIssue(issueID)
 				if findErr != nil {
-					// Was silent: a failed lookup meant stale MRs were never
-					// superseded and quietly accumulated in the queue.
-					style.PrintWarning("could not look up prior MRs to supersede for %s: %v\nCheck 'gt mq list %s' for stale MRs.", issueID, findErr, rigName)
+					// Fail loud (renascentia 2026-08-29): a failed lookup means
+					// stale MRs may sit unsuperseded in the queue — the same
+					// failure shape as the original double-submit bug through a
+					// different door. Recorded in doneErrors so it reaches the
+					// final error summary, not just scrollback.
+					errMsg := fmt.Sprintf("could not look up prior MRs to supersede for %s: %v (check 'gt mq list %s' for stale MRs)", issueID, findErr, rigName)
+					doneErrors = append(doneErrors, errMsg)
+					style.PrintWarning("%s", errMsg)
 				} else {
 					for _, old := range oldMRs {
 						if old.ID == mrID {
@@ -1830,7 +1835,17 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 						}
 						reason := fmt.Sprintf("superseded by %s", mrID)
 						if closeErr := bd.CloseWithReason(reason, old.ID); closeErr != nil {
-							style.PrintWarning("could not supersede old MR %s: %v", old.ID, closeErr)
+							// Fail loud (renascentia 2026-08-29): a warn-and-continue
+							// here leaves a stale OPEN MR that the refinery may
+							// process instead of the fresh one. Surface it in the
+							// final error summary AND on the new MR itself, where
+							// the refinery actually looks.
+							errMsg := fmt.Sprintf("could not supersede old MR %s (still OPEN in the queue): %v", old.ID, closeErr)
+							doneErrors = append(doneErrors, errMsg)
+							style.PrintWarning("%s", errMsg)
+							if commentErr := bd.AddComment(mrID, fmt.Sprintf("SUPERSEDE FAILED: prior MR %s for the same source issue is still open (%v). Refinery: treat %s as stale — this MR is the current submission.", old.ID, closeErr, old.ID)); commentErr != nil {
+								style.PrintWarning("could not record supersede failure on %s: %v", mrID, commentErr)
+							}
 							continue
 						}
 						fmt.Printf("  %s Superseded old MR: %s\n", style.Dim.Render("○"), old.ID)
@@ -1893,6 +1908,17 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 	}
 
 notifyWitness:
+	// Surface accumulated non-fatal errors (renascentia 2026-08-29).
+	// doneErrors was appended at eleven sites and never read — every
+	// "recorded" failure was silent. A gt done that hit problems must say so
+	// in one place before handing off.
+	if len(doneErrors) > 0 {
+		style.PrintWarning("gt done finished with %d problem(s) that need attention:", len(doneErrors))
+		for _, e := range doneErrors {
+			fmt.Printf("  %s %s\n", style.Warning.Render("✗"), e)
+		}
+	}
+
 	// Nudge refinery — MR bead is already on main (transaction-based shared main).
 	if shouldNudgeRefinery(exitType, mrID) {
 		nudgeRefinery(rigName, "MERGE_READY received - check inbox for pending work")
