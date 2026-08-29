@@ -481,6 +481,16 @@ type fakeWisp struct {
 	status    string
 	issueType string
 	createdAt time.Time
+	labels    []string
+}
+
+func (w *fakeWisp) hasLabel(label string) bool {
+	for _, l := range w.labels {
+		if l == label {
+			return true
+		}
+	}
+	return false
 }
 
 type fakeDep struct {
@@ -579,6 +589,9 @@ func (s *fakeReaperState) staleCandidatesLocked(cutoff time.Time, excludeMolecul
 	var ids []string
 	for id, w := range s.wisps {
 		if !isOpenWispStatus(w.status) || w.issueType == "agent" || !w.createdAt.Before(cutoff) {
+			continue
+		}
+		if w.hasLabel("gt:merge-request") {
 			continue
 		}
 		if s.hasOpenParentLocked(id) {
@@ -822,4 +835,112 @@ func assertOpsContainInOrder(t *testing.T, ops []string, want ...string) {
 		}
 	}
 	t.Fatalf("ops missing ordered sequence %v in %v", want[next:], ops)
+}
+
+// --- Merge-request exemption (renascentia, 2026-08-29) ---
+// A held MR is awaiting a decisor; TTL must never close it. Observed
+// 2026-08-25: the reaper bulk-closed two refinery-HELD MRs, unmerged,
+// with no close_reason. These tests pin the exclusion.
+
+// TestReapExcludesMergeRequestWisps: the Reap() eligibility must exclude
+// wisps labeled gt:merge-request via the wisp_labels join.
+func TestReapExcludesMergeRequestWisps(t *testing.T) {
+	source := readReaperSource(t)
+	reapStart := strings.Index(source, "func Reap(")
+	if reapStart == -1 {
+		t.Fatal("could not locate Reap()")
+	}
+	reapBody := source[reapStart:]
+	if end := strings.Index(reapBody, "\nfunc closeWispsInBatches"); end != -1 {
+		reapBody = reapBody[:end]
+	}
+	if !strings.Contains(reapBody, "mergeRequestExcludeJoin(") {
+		t.Fatal("Reap() no longer applies the merge-request exclusion join — held MRs would be TTL-closed again")
+	}
+}
+
+// TestScanExcludesMergeRequestWisps: Scan() must use the same predicate,
+// or operators see scan>0 / reap=0 for the same cutoff.
+func TestScanExcludesMergeRequestWisps(t *testing.T) {
+	source := readReaperSource(t)
+	scanStart := strings.Index(source, "func Scan(")
+	reapStart := strings.Index(source, "func Reap(")
+	if scanStart == -1 || reapStart == -1 || reapStart <= scanStart {
+		t.Fatal("could not isolate Scan() body")
+	}
+	scanBody := source[scanStart:reapStart]
+	if !strings.Contains(scanBody, "mergeRequestExcludeJoin(") {
+		t.Fatal("Scan() reap-candidate count no longer excludes merge-request wisps")
+	}
+}
+
+// TestMergeRequestExcludeJoinShape: the join must key on the exact label the
+// MR-creation path writes (done.go: Labels gt:merge-request) and follow the
+// LEFT JOIN anti-pattern (gt-jd1z).
+func TestMergeRequestExcludeJoinShape(t *testing.T) {
+	join, where := mergeRequestExcludeJoin("mr_wisp")
+	if !strings.Contains(join, "wisp_labels") {
+		t.Fatalf("join must read wisp_labels, got: %s", join)
+	}
+	if !strings.Contains(join, "'gt:merge-request'") {
+		t.Fatalf("join must key on the gt:merge-request label, got: %s", join)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(join), "LEFT JOIN") {
+		t.Fatalf("exclusion must be a LEFT JOIN anti-join, got: %s", join)
+	}
+	if where != "mr_wisp.issue_id IS NULL" {
+		t.Fatalf("unexpected where condition: %s", where)
+	}
+}
+
+// TestReapHeldMergeRequestSurvives: behavioral — a stale open MR-labeled wisp
+// survives a real Reap() pass while an equally stale plain wisp is closed.
+func TestReapHeldMergeRequestSurvives(t *testing.T) {
+	now := time.Now().UTC()
+	state := &fakeReaperState{
+		wisps: map[string]*fakeWisp{
+			"held-mr-old":  {id: "held-mr-old", status: "open", issueType: "task", createdAt: now.Add(-72 * time.Hour), labels: []string{"gt:merge-request"}},
+			"stale-orphan": {id: "stale-orphan", status: "open", issueType: "task", createdAt: now.Add(-72 * time.Hour)},
+			"fresh-orphan": {id: "fresh-orphan", status: "open", issueType: "task", createdAt: now.Add(-1 * time.Hour)},
+		},
+		deps: []fakeDep{},
+		ops:  map[int][]string{},
+	}
+	db := openFakeReaperDB(t, state)
+	t.Cleanup(func() { _ = db.Close() })
+
+	maxAge := 24 * time.Hour
+	scan, err := Scan(db, "testdb", maxAge, 7*24*time.Hour, 7*24*time.Hour, 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if scan.ReapCandidates != 1 {
+		t.Fatalf("Scan ReapCandidates = %d, want 1 (the plain stale orphan only)", scan.ReapCandidates)
+	}
+
+	res, err := Reap(db, "testdb", maxAge, false)
+	if err != nil {
+		t.Fatalf("Reap: %v", err)
+	}
+	if res.Reaped != 1 {
+		t.Fatalf("Reaped = %d, want 1", res.Reaped)
+	}
+	if got := state.status("held-mr-old"); got != "open" {
+		t.Fatalf("held MR was reaped (status=%s) — the decisor hold is not safe", got)
+	}
+	if got := state.status("stale-orphan"); got != "closed" {
+		t.Fatalf("plain stale orphan not reaped (status=%s) — exclusion is too broad", got)
+	}
+	if got := state.status("fresh-orphan"); got != "open" {
+		t.Fatalf("fresh orphan unexpectedly closed (status=%s)", got)
+	}
+}
+
+func readReaperSource(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile("reaper.go")
+	if err != nil {
+		t.Fatalf("read reaper.go: %v", err)
+	}
+	return string(data)
 }
