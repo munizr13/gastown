@@ -993,7 +993,13 @@ func (d *Daemon) heartbeat(state *State) {
 	// 14. Dispatch scheduled work (capacity-controlled polecat dispatch).
 	// Shells out to `gt scheduler run` to avoid circular import between daemon and cmd.
 	// Pressure-gated: polecats are the primary resource consumers.
-	if p := d.checkPressure("polecat"); !p.OK {
+	// Pause-gated (renascentia 2026-08-29): a human-paused Deacon means "stop
+	// starting new work" — the authoritative freeze lives in the scheduler's
+	// dispatchFreezeReason gate; this early-out saves the subprocess and logs
+	// the reason where daemon operators look.
+	if paused, _, pauseErr := deacon.IsPaused(d.config.TownRoot); pauseErr == nil && paused {
+		d.logger.Println("Deacon is paused (deliberate stop) — skipping queued-work dispatch")
+	} else if p := d.checkPressure("polecat"); !p.OK {
 		d.logger.Printf("Deferring polecat dispatch: %s", p.Reason)
 	} else {
 		d.dispatchQueuedWork()
@@ -1463,6 +1469,14 @@ func (d *Daemon) runDegradedBootTriage(b *boot.Boot) {
 func (d *Daemon) ensureDeaconRunning() {
 	const agentID = "deacon"
 
+	// Never spawn a deliberately paused Deacon (renascentia 2026-08-29):
+	// the pause file is the human's stop control; only `gt deacon resume`
+	// (or removing the file) may bring it back.
+	if paused, _, pauseErr := deacon.IsPaused(d.config.TownRoot); pauseErr == nil && paused {
+		d.logger.Printf("Deacon is paused (deliberate stop) — not starting it")
+		return
+	}
+
 	// Check restart tracker for backoff/crash loop
 	if d.restartTracker != nil {
 		if d.restartTracker.IsInCrashLoop(agentID) {
@@ -1523,6 +1537,14 @@ func (d *Daemon) deaconGracePeriod() time.Duration {
 // - Grace period only applies if heartbeat is from BEFORE we started Deacon
 // - If heartbeat is from AFTER start but stale, Deacon is stuck
 func (d *Daemon) checkDeaconHeartbeat() {
+	// A deliberately paused Deacon writes no heartbeat BY DESIGN
+	// (runDeaconHeartbeat refuses while paused), so staleness there is not
+	// death and must never trigger a kill/respawn — an automatic recovery
+	// tool must not override a deliberate human stop. (renascentia 2026-08-29;
+	// previously this path would kill and respawn a paused Deacon every ~20m.)
+	if paused, _, pauseErr := deacon.IsPaused(d.config.TownRoot); pauseErr == nil && paused {
+		return
+	}
 	// Respect crash-loop guard: if the restart tracker says Deacon is in a
 	// crash loop, do not kill the session — the guard is deliberately holding
 	// off restarts to break the cycle. (Fixes #2086)

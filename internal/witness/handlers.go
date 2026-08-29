@@ -19,6 +19,8 @@ import (
 	"github.com/steveyegge/gastown/internal/channelevents"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/deacon"
+	"github.com/steveyegge/gastown/internal/estop"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/mail"
 	"github.com/steveyegge/gastown/internal/mayor"
@@ -775,6 +777,20 @@ var slotOpenDecisionForNotify = slotOpenDecision
 
 func defaultRunSchedulerForSlotOpen(townRoot string) (slotOpenSchedulerResult, error) {
 	var result slotOpenSchedulerResult
+
+	// Freeze belt-check (renascentia 2026-08-29): a freed polecat slot must
+	// not trigger dispatch while the town is e-stopped or the Deacon is
+	// deliberately paused. The authoritative gate lives inside
+	// `gt scheduler run` (dispatchFreezeReason); this early-out avoids the
+	// subprocess and keeps the slot-open path honest even if the shell-out
+	// ever changes. This path previously consulted only the scheduler's own
+	// pause file — every `gt done` could re-ignite dispatch during an e-stop.
+	if estop.IsActive(townRoot) {
+		return result, nil
+	}
+	if paused, _, pauseErr := deacon.IsPaused(townRoot); pauseErr == nil && paused {
+		return result, nil
+	}
 
 	before, err := readSchedulerStatusForSlotOpen(townRoot)
 	if err != nil {

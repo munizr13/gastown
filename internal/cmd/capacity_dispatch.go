@@ -14,11 +14,46 @@ import (
 	"github.com/gofrs/flock"
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
+	"github.com/steveyegge/gastown/internal/deacon"
+	"github.com/steveyegge/gastown/internal/estop"
 	"github.com/steveyegge/gastown/internal/doltserver"
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/scheduler/capacity"
 	"github.com/steveyegge/gastown/internal/style"
 )
+
+// dispatchFreezeReason returns a non-empty human-readable reason when polecat
+// dispatch must not proceed: an active town E-STOP, or a deliberately paused
+// Deacon (a human pause of the flywheel means "stop starting new work", and
+// an automatic recovery/dispatch tool must never override a deliberate stop).
+// A pause-file READ ERROR fails open with a warning rather than freezing the
+// factory on a corrupt file — the e-stop remains the hard control.
+func dispatchFreezeReason(townRoot string) string {
+	if estop.IsActive(townRoot) {
+		return "E-STOP is active (remove with `gt thaw` after the incident is resolved)"
+	}
+	paused, state, err := deacon.IsPaused(townRoot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not read deacon pause state (%v); dispatch continues\n", err)
+		return ""
+	}
+	if paused {
+		by := "unknown"
+		reason := ""
+		if state != nil {
+			if state.PausedBy != "" {
+				by = state.PausedBy
+			}
+			reason = state.Reason
+		}
+		msg := fmt.Sprintf("Deacon is paused by %s (resume with `gt deacon resume`)", by)
+		if reason != "" {
+			msg += " — " + reason
+		}
+		return msg
+	}
+	return ""
+}
 
 // crossRigEscalationDebounce is the minimum interval between cross-rig prefix
 // escalations for the same (rig, prefix) pair. Prevents alert spam when a
@@ -151,7 +186,23 @@ func buildSchedulerDispatchPlan(townRoot string, batchOverride int, cleanup bool
 
 // dispatchScheduledWork is the main dispatch loop for the capacity scheduler.
 // Called by both `gt scheduler run` and the daemon heartbeat.
+//
+// Freeze gate (renascentia, 2026-08-29): this is the single funnel every
+// dispatch path drains through — the daemon's queued-work step, the witness
+// slot-open trigger, and manual `gt scheduler run` all shell into or call
+// this function. It therefore honors BOTH human stop controls, not just the
+// scheduler's own pause file: an active E-STOP and a human-paused Deacon
+// each freeze dispatch here. Before this gate, `deacon.IsPaused` had zero
+// dispatch-path readers and ESTOP was checked only in the daemon heartbeat —
+// which is how 27 deacon spawns happened after the 2026-08-03 e-stop and how
+// the dog cadence ran through a 26-day human pause.
 func dispatchScheduledWork(townRoot, actor string, batchOverride int, dryRun bool) (int, error) {
+	if reason := dispatchFreezeReason(townRoot); reason != "" {
+		if !isDaemonDispatch() {
+			fmt.Printf("%s Dispatch frozen: %s — no work will be slung\n", style.Dim.Render("⏸"), reason)
+		}
+		return 0, nil
+	}
 	if dryRun {
 		dispatchPlan, err := buildSchedulerDispatchPlan(townRoot, batchOverride, false)
 		if err != nil {
