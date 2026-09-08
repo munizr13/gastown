@@ -240,7 +240,7 @@ func (dm *dogMol) closeRemainingSteps() error {
 	}
 
 	if closed > 0 {
-		dm.logger.Printf("dog_molecule: closeRemainingSteps: cancelled %d unreported step wisp(s) under %s", closed, dm.rootID)
+		dm.logger.Printf("dog_molecule: closeRemainingSteps: canceled %d unreported step wisp(s) under %s", closed, dm.rootID)
 	}
 	if len(failed) > 0 {
 		return fmt.Errorf("could not retire child wisps: %s", strings.Join(failed, ", "))
