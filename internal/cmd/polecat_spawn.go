@@ -110,6 +110,15 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 		}
 	}
 
+	if reason := dispatchFreezeReason(townRoot); reason != "" {
+		return nil, fmt.Errorf("cannot start polecat: %s", reason)
+	}
+	if opts.HookBead != "" && witness.ShouldBlockRespawn(townRoot, opts.HookBead) {
+		// Reject exhausted or unreadable budgets before Dolt recovery and
+		// allocation. The later atomic reservation still arbitrates races.
+		return nil, fmt.Errorf("startup admission: respawn budget exhausted or unreadable for %s", opts.HookBead)
+	}
+
 	// Load rig config
 	rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
 	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
@@ -158,20 +167,13 @@ func SpawnPolecatForSling(rigName string, opts SlingSpawnOptions) (*SpawnedPolec
 		defer admission.Release()
 	}
 
-	// Per-bead respawn circuit breaker (clown show #22):
-	// Track how many times this bead has been slung. Block after N attempts
-	// to prevent witness→deacon→sling feedback loops.
-	if opts.HookBead != "" && !opts.Force {
-		if witness.ShouldBlockRespawn(townRoot, opts.HookBead) {
-			maxRespawns := config.LoadOperationalConfig(townRoot).GetWitnessConfig().MaxBeadRespawnsV()
-			return nil, fmt.Errorf("respawn limit reached for %s (%d attempts). "+
-				"This bead keeps failing — investigate before re-dispatching.\n"+
-				"Override: gt sling %s %s --force\n"+
-				"Reset:    gt sling respawn-reset %s",
-				opts.HookBead, maxRespawns,
-				opts.HookBead, rigName, opts.HookBead)
+	// Force also means automatic stale-hook recovery in runSling. It must not
+	// bypass the startup budget. Reserve before allocation and retain the count
+	// through rollback so a failed launch cannot reopen its own budget.
+	if opts.HookBead != "" {
+		if _, err := witness.ReserveBeadRespawn(townRoot, opts.HookBead); err != nil {
+			return nil, fmt.Errorf("startup admission: %w", err)
 		}
-		witness.RecordBeadRespawn(townRoot, opts.HookBead)
 	}
 
 	if reclaimed, err := reclaimBrokenIdlePolecatForSling(polecatMgr); err != nil {

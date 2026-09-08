@@ -15,42 +15,16 @@ import (
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/deacon"
-	"github.com/steveyegge/gastown/internal/estop"
 	"github.com/steveyegge/gastown/internal/doltserver"
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/scheduler/capacity"
 	"github.com/steveyegge/gastown/internal/style"
 )
 
-// dispatchFreezeReason returns a non-empty human-readable reason when polecat
-// dispatch must not proceed: an active town E-STOP, or a deliberately paused
-// Deacon (a human pause of the flywheel means "stop starting new work", and
-// an automatic recovery/dispatch tool must never override a deliberate stop).
-// A pause-file READ ERROR fails open with a warning rather than freezing the
-// factory on a corrupt file — the e-stop remains the hard control.
+// dispatchFreezeReason applies the same hold policy as startup and maintenance.
 func dispatchFreezeReason(townRoot string) string {
-	if estop.IsActive(townRoot) {
-		return "E-STOP is active (remove with `gt thaw` after the incident is resolved)"
-	}
-	paused, state, err := deacon.IsPaused(townRoot)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not read deacon pause state (%v); dispatch continues\n", err)
-		return ""
-	}
-	if paused {
-		by := "unknown"
-		reason := ""
-		if state != nil {
-			if state.PausedBy != "" {
-				by = state.PausedBy
-			}
-			reason = state.Reason
-		}
-		msg := fmt.Sprintf("Deacon is paused by %s (resume with `gt deacon resume`)", by)
-		if reason != "" {
-			msg += " — " + reason
-		}
-		return msg
+	if err := deacon.CheckPatrolAllowed(townRoot); err != nil {
+		return err.Error()
 	}
 	return ""
 }

@@ -80,6 +80,21 @@ func waitBeforeReaperDatabase(index int) error {
 	return nil
 }
 
+// guardReaperMutation also applies to direct Dog helper calls after dispatch.
+func guardReaperMutation(cmd *cobra.Command, args []string) error {
+	if reaperDryRun {
+		return nil
+	}
+	townRoot, err := findTownRoot()
+	if err != nil {
+		return fmt.Errorf("cannot establish maintenance hold state: %w", err)
+	}
+	if reason := dispatchFreezeReason(townRoot); reason != "" {
+		return fmt.Errorf("cannot run reaper: %s", reason)
+	}
+	return nil
+}
+
 var reaperCmd = &cobra.Command{
 	Use:     "reaper",
 	GroupID: GroupServices,
@@ -219,8 +234,9 @@ The Dog uses this to understand the state before deciding what to reap.`,
 }
 
 var reaperReapCmd = &cobra.Command{
-	Use:   "reap",
-	Short: "Close stale wisps past max-age",
+	PreRunE: guardReaperMutation,
+	Use:     "reap",
+	Short:   "Close stale wisps past max-age",
 	Long: `Close wisps that are past the max-age threshold and whose parent
 molecule is already closed (or missing/orphaned).
 
@@ -311,8 +327,9 @@ Returns the count of reaped wisps. Use --dry-run to preview.`,
 }
 
 var reaperPurgeCmd = &cobra.Command{
-	Use:   "purge",
-	Short: "Delete old closed wisps and mail",
+	PreRunE: guardReaperMutation,
+	Use:     "purge",
+	Short:   "Delete old closed wisps and mail",
 	Long: `Delete closed wisps past the purge-age threshold and closed mail
 past the mail-age threshold. Irreversible operation.
 
@@ -397,8 +414,9 @@ Returns counts of purged rows. Use --dry-run to preview.`,
 }
 
 var reaperAutoCloseCmd = &cobra.Command{
-	Use:   "auto-close",
-	Short: "Close stale issues past stale-age",
+	PreRunE: guardReaperMutation,
+	Use:     "auto-close",
+	Short:   "Close stale issues past stale-age",
 	Long: `Close issues open with no updates past the stale-age threshold.
 Excludes P0/P1 priority, epics, and issues with active dependencies.
 
@@ -479,8 +497,9 @@ Returns the count of closed issues. Use --dry-run to preview.`,
 }
 
 var reaperRunCmd = &cobra.Command{
-	Use:   "run",
-	Short: "Run full reaper cycle across all databases",
+	PreRunE: guardReaperMutation,
+	Use:     "run",
+	Short:   "Run full reaper cycle across all databases",
 	Long: `Execute a full reaper cycle: scan → reap → purge → auto-close → report.
 
 This is the inline fallback for when Dog dispatch is unavailable.

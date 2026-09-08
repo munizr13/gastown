@@ -4,9 +4,9 @@
 package boot
 
 import (
-	"github.com/steveyegge/gastown/internal/cli"
 	"encoding/json"
 	"fmt"
+	"github.com/steveyegge/gastown/internal/cli"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +14,7 @@ import (
 
 	"github.com/gofrs/flock"
 	"github.com/steveyegge/gastown/internal/config"
+	"github.com/steveyegge/gastown/internal/deacon"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/tmux"
 	"github.com/steveyegge/gastown/internal/util"
@@ -54,6 +55,9 @@ func New(townRoot string) *Boot {
 		degraded:  os.Getenv("GT_DEGRADED") == "true",
 	}
 }
+
+// TownRoot returns the workspace whose lifecycle this Boot instance manages.
+func (b *Boot) TownRoot() string { return b.townRoot }
 
 // EnsureDir ensures the Boot directory exists.
 func (b *Boot) EnsureDir() error {
@@ -155,6 +159,10 @@ func (b *Boot) LoadStatus() (*Status, error) {
 // The agentOverride parameter allows specifying an agent alias to use instead of the town default.
 // Boot is ephemeral - each spawn kills any existing session and starts fresh.
 func (b *Boot) Spawn(agentOverride string) error {
+	if err := deacon.CheckPatrolAllowed(b.townRoot); err != nil {
+		return err
+	}
+
 	// No IsRunning() guard here - Boot is ephemeral by design.
 	// spawnTmux() kills any existing session before spawning fresh.
 

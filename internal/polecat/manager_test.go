@@ -21,6 +21,7 @@ import (
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/testutil"
 	"github.com/steveyegge/gastown/internal/tmux"
+	"github.com/steveyegge/gastown/internal/util"
 )
 
 func TestHasSubmittableWorkForWorkstateUsesBranchTargetStatus(t *testing.T) {
@@ -2258,6 +2259,10 @@ func TestAddWithOptions_RollbackReleasesName(t *testing.T) {
 	m := NewManager(r, git.NewGit(root), nil)
 
 	// Allocate a name (simulates what gt sling does before AddWithOptions)
+	// This fixture exercises ref-validation rollback independently of host capacity.
+	m.diskSpaceCheck = func(string) (util.DiskSpaceLevel, string, error) {
+		return util.DiskSpaceOK, "", nil
+	}
 	name, err := m.AllocateName()
 	if err != nil {
 		t.Fatalf("AllocateName: %v", err)
@@ -2271,8 +2276,8 @@ func TestAddWithOptions_RollbackReleasesName(t *testing.T) {
 
 	// Try to create polecat — should fail because origin/main doesn't exist
 	_, err = m.AddWithOptions(name, AddOptions{})
-	if err == nil {
-		t.Fatal("AddWithOptions should have failed without origin/main ref")
+	if err == nil || !strings.Contains(err.Error(), "configured default_branch not found") {
+		t.Fatalf("AddWithOptions should fail at origin/main validation: %v", err)
 	}
 
 	// Verify name was released back to pool (gt-2vs22 fix)
@@ -2415,10 +2420,14 @@ esac
 		t.Fatalf("AllocateName: %v", err)
 	}
 
+	// Exercise worktree rollback independently of the host's available disk space.
+	m.diskSpaceCheck = func(string) (util.DiskSpaceLevel, string, error) {
+		return util.DiskSpaceOK, "", nil
+	}
 	// AddWithOptions should fail at agent bead creation (mock bd fails on create)
 	_, err = m.AddWithOptions(name, AddOptions{})
-	if err == nil {
-		t.Fatal("AddWithOptions should have failed with mock bd failing on create")
+	if err == nil || !strings.Contains(err.Error(), "agent bead required for polecat tracking") {
+		t.Fatalf("AddWithOptions should fail at agent bead creation: %v", err)
 	}
 
 	// Verify name was released back to pool
@@ -2442,11 +2451,12 @@ esac
 	cmd = exec.Command("git", "worktree", "list", "--porcelain")
 	cmd.Dir = mayorRig
 	out, cmdErr := cmd.CombinedOutput()
-	if cmdErr == nil {
-		for _, line := range strings.Split(string(out), "\n") {
-			if strings.Contains(line, clonePath) {
-				t.Errorf("stale worktree entry for %s still registered in git after rollback", clonePath)
-			}
+	if cmdErr != nil {
+		t.Fatalf("cannot verify worktree rollback: %v\n%s", cmdErr, out)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.Contains(line, clonePath) {
+			t.Errorf("stale worktree entry for %s still registered in git after rollback", clonePath)
 		}
 	}
 }

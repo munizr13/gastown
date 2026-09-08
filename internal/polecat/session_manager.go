@@ -17,6 +17,7 @@ import (
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/deacon"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/rig"
 	"github.com/steveyegge/gastown/internal/runtime"
@@ -318,6 +319,10 @@ func (m *SessionManager) polecatSlot(polecat string) int {
 
 // Start creates and starts a new session for a polecat.
 func (m *SessionManager) Start(polecat string, opts SessionStartOptions) error {
+	if err := deacon.CheckPatrolAllowed(filepath.Dir(m.rig.Path)); err != nil {
+		return err
+	}
+
 	if !m.hasPolecat(polecat) {
 		return fmt.Errorf("%w: %s", ErrPolecatNotFound, polecat)
 	}

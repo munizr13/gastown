@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -48,7 +49,7 @@ func checkpointDogInterval(config *DaemonPatrolConfig) time.Duration {
 // compactor_dog's SQL operations). The daemon pours a molecule for
 // observability, then runs git commands via exec.Command.
 func (d *Daemon) runCheckpointDog() {
-	if !d.isPatrolActive("checkpoint_dog") {
+	if !d.canRunPatrol("checkpoint_dog") {
 		return
 	}
 
@@ -60,32 +61,43 @@ func (d *Daemon) runCheckpointDog() {
 	rigs := d.getKnownRigs()
 	totalScanned := 0
 	totalCheckpointed := 0
+	totalFailures := 0
 
 	for _, rigName := range rigs {
-		scanned, checkpointed := d.checkpointRigPolecats(rigName)
+		scanned, checkpointed, failures := d.checkpointRigPolecats(rigName)
 		totalScanned += scanned
 		totalCheckpointed += checkpointed
+		totalFailures += failures
 	}
 
-	mol.closeStep("scan")
-	mol.closeStep("checkpoint")
+	mol.closeStep("scan", fmt.Sprintf("scan returned: worktrees=%d", totalScanned))
+	if totalFailures > 0 {
+		mol.failStep("checkpoint", fmt.Sprintf("created=%d, failures=%d", totalCheckpointed, totalFailures))
+	} else {
+		mol.closeStep("checkpoint", fmt.Sprintf("checkpoint returned: created=%d, scanned=%d", totalCheckpointed, totalScanned))
+	}
 
-	d.logger.Printf("checkpoint_dog: cycle complete — scanned %d worktrees, checkpointed %d",
-		totalScanned, totalCheckpointed)
+	d.logger.Printf("checkpoint_dog: cycle complete — scanned %d worktrees, checkpointed %d, failures %d",
+		totalScanned, totalCheckpointed, totalFailures)
 	mol.closeStep("report")
 }
 
 // checkpointRigPolecats checkpoints dirty polecat worktrees in a single rig.
-// Returns (scanned, checkpointed) counts.
-func (d *Daemon) checkpointRigPolecats(rigName string) (int, int) {
+// Returns (scanned, checkpointed, failures) counts.
+func (d *Daemon) checkpointRigPolecats(rigName string) (int, int, int) {
 	polecatsDir := filepath.Join(d.config.TownRoot, rigName, "polecats")
 	polecats, err := listPolecatWorktrees(polecatsDir)
 	if err != nil {
-		return 0, 0
+		if os.IsNotExist(err) {
+			return 0, 0, 0 // A rig may not have allocated any polecats yet.
+		}
+		d.logger.Printf("checkpoint_dog: cannot list %s: %v", rigName, err)
+		return 0, 0, 1
 	}
 
 	scanned := 0
 	checkpointed := 0
+	failures := 0
 
 	for _, polecatName := range polecats {
 		scanned++
@@ -96,6 +108,7 @@ func (d *Daemon) checkpointRigPolecats(rigName string) (int, int) {
 		alive, err := d.tmux.HasSession(sessionName)
 		if err != nil {
 			d.logger.Printf("checkpoint_dog: error checking session %s: %v", sessionName, err)
+			failures++
 			continue
 		}
 		if !alive {
@@ -115,33 +128,38 @@ func (d *Daemon) checkpointRigPolecats(rigName string) (int, int) {
 		// (gt-checkpoint-workdir fix.)
 		workDir := resolveCheckpointWorkDir(polecatsDir, polecatName, rigName)
 		if workDir == "" {
-			continue // Neither layout has a usable .git — skip silently.
+			d.logger.Printf("checkpoint_dog: no usable worktree for active %s/%s", rigName, polecatName)
+			failures++
+			continue
 		}
-		if d.checkpointWorktree(workDir, rigName, polecatName) {
+		created, err := d.checkpointWorktree(workDir, rigName, polecatName)
+		if err != nil {
+			failures++
+		} else if created {
 			checkpointed++
 		}
 	}
 
-	return scanned, checkpointed
+	return scanned, checkpointed, failures
 }
 
 // checkpointWorktree creates a WIP checkpoint commit for a single worktree.
-// Returns true if a checkpoint was created.
-func (d *Daemon) checkpointWorktree(workDir, rigName, polecatName string) bool {
+// Returns whether a checkpoint was created, distinguishing a clean skip from failure.
+func (d *Daemon) checkpointWorktree(workDir, rigName, polecatName string) (bool, error) {
 	// Check git status (exclude runtime dirs from consideration)
 	statusOut, err := runGitCmd(workDir, "status", "--porcelain")
 	if err != nil {
 		d.logger.Printf("checkpoint_dog: git status failed in %s/%s: %v", rigName, polecatName, err)
-		return false
+		return false, err
 	}
 	if strings.TrimSpace(statusOut) == "" {
-		return false // Clean worktree
+		return false, nil // Clean worktree
 	}
 
 	// Stage everything
 	if _, err := runGitCmd(workDir, "add", "-A"); err != nil {
 		d.logger.Printf("checkpoint_dog: git add -A failed in %s/%s: %v", rigName, polecatName, err)
-		return false
+		return false, err
 	}
 
 	// Unstage runtime/ephemeral artifacts using the same centralized policy as
@@ -150,12 +168,12 @@ func (d *Daemon) checkpointWorktree(workDir, rigName, polecatName string) bool {
 	stagedOut, err := runGitCmdRaw(workDir, "diff", "--cached", "--name-only", "-z")
 	if err != nil {
 		d.logger.Printf("checkpoint_dog: git diff --cached failed in %s/%s: %v", rigName, polecatName, err)
-		return false
+		return false, err
 	}
 	for _, pathspec := range gtgit.RuntimeArtifactPathspecs(splitNullSeparatedPaths(stagedOut)) {
 		if _, err := runGitCmd(workDir, "reset", "HEAD", "--", pathspec); err != nil {
 			d.logger.Printf("checkpoint_dog: git reset runtime artifact %q failed in %s/%s: %v", pathspec, rigName, polecatName, err)
-			return false
+			return false, err
 		}
 	}
 
@@ -163,31 +181,35 @@ func (d *Daemon) checkpointWorktree(workDir, rigName, polecatName string) bool {
 	// (additions + modifications), never commit deletions of tracked files.
 	// This prevents the bug where a polecat's working tree has a missing
 	// tracked file and the checkpoint commits the deletion (gt-pvx fix).
-	if delOut, err := runGitCmd(workDir, "diff", "--cached", "--name-only", "--diff-filter=D"); err == nil {
-		if dels := strings.TrimSpace(delOut); dels != "" {
-			for _, f := range strings.Split(dels, "\n") {
-				if f != "" {
-					_, _ = runGitCmd(workDir, "reset", "HEAD", "--", f)
-				}
-			}
+	delOut, err := runGitCmdRaw(workDir, "diff", "--cached", "--name-only", "--diff-filter=D", "-z")
+	if err != nil {
+		return false, fmt.Errorf("inspect checkpoint deletions: %w", err)
+	}
+	for _, file := range splitNullSeparatedPaths(delOut) {
+		if _, err := runGitCmd(workDir, "reset", "HEAD", "--", file); err != nil {
+			return false, fmt.Errorf("exclude checkpoint deletion %q: %w", file, err)
 		}
 	}
 
 	// Check if anything is staged after exclusions
-	diffOut, err := runGitCmd(workDir, "diff", "--cached", "--quiet")
-	if err == nil && strings.TrimSpace(diffOut) == "" {
+	_, err = runGitCmd(workDir, "diff", "--cached", "--quiet")
+	if err == nil {
 		// --quiet exits 0 if no diff → nothing staged
-		return false
+		return false, nil
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		return false, fmt.Errorf("inspect staged checkpoint: %w", err)
 	}
 
 	// Commit the checkpoint
 	if _, err := runGitCmd(workDir, "commit", "-m", "WIP: checkpoint (auto)"); err != nil {
 		d.logger.Printf("checkpoint_dog: git commit failed in %s/%s: %v", rigName, polecatName, err)
-		return false
+		return false, err
 	}
 
 	d.logger.Printf("checkpoint_dog: created WIP checkpoint in %s/%s", rigName, polecatName)
-	return true
+	return true, nil
 }
 
 // isGitWorktree reports whether the given directory is the root of a git
@@ -242,7 +264,7 @@ func runGitCmdRaw(workDir string, args ...string) (string, error) {
 	if err != nil {
 		errMsg := strings.TrimSpace(stderr.String())
 		if errMsg != "" {
-			return "", fmt.Errorf("%s: %s", err, errMsg)
+			return "", fmt.Errorf("%w: %s", err, errMsg)
 		}
 		return "", err
 	}

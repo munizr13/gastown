@@ -117,7 +117,7 @@ Examples:
 }
 
 func init() {
-	compactReportCmd.Flags().BoolVar(&compactReportDryRun, "dry-run", false, "Preview report without sending")
+	compactReportCmd.Flags().BoolVar(&compactReportDryRun, "dry-run", false, "Preview compaction and report without making changes or sending")
 	compactReportCmd.Flags().BoolVar(&compactReportWeekly, "weekly", false, "Generate weekly rollup instead of daily digest")
 	compactReportCmd.Flags().BoolVarP(&compactReportVerbose, "verbose", "v", false, "Verbose output")
 	compactReportCmd.Flags().StringVar(&compactReportDate, "date", "", "Report for specific date (YYYY-MM-DD); default: today")
@@ -157,7 +157,11 @@ func runDailyDigest() error {
 	}
 
 	// Run compaction with --json to get results
-	compactOut, err := exec.Command("gt", "compact", "--json").Output()
+	compactArgs := []string{"compact", "--json"}
+	if compactReportDryRun {
+		compactArgs = append(compactArgs, "--dry-run")
+	}
+	compactOut, err := exec.Command("gt", compactArgs...).Output()
 	if err != nil {
 		return fmt.Errorf("running compaction: %w", err)
 	}

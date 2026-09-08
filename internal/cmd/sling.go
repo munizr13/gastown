@@ -12,6 +12,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/beads"
+	"github.com/steveyegge/gastown/internal/deacon"
+	"github.com/steveyegge/gastown/internal/estop"
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/lock"
 	"github.com/steveyegge/gastown/internal/mail"
@@ -179,7 +181,10 @@ var slingRespawnResetCmd = &cobra.Command{
 
 When a bead hits the respawn limit (3 attempts), gt sling blocks further
 dispatches to prevent spawn storms. After investigating the root cause,
-use this command to allow re-dispatch.`,
+use this command to allow re-dispatch. The budget is shared by all feeders.
+An explicit Deacon pause or E-STOP is required before resetting it. Keep the
+hold until the launcher/backend is repaired, then resume deliberately.
+--force does not bypass this limit.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runSlingRespawnReset,
 }
@@ -190,10 +195,17 @@ func runSlingRespawnReset(_ *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
+	paused, _, err := deacon.IsPaused(townRoot)
+	if err != nil {
+		return fmt.Errorf("cannot verify containment before respawn reset: %w", err)
+	}
+	if !paused && !estop.IsActive(townRoot) {
+		return fmt.Errorf("respawn reset requires an explicit Deacon pause or E-STOP; contain automatic feeders before reopening the shared budget")
+	}
 	if err := witness.ResetBeadRespawnCount(townRoot, beadID); err != nil {
 		return fmt.Errorf("resetting respawn count for %s: %w", beadID, err)
 	}
-	fmt.Printf("Reset respawn counter for %s. It can be slung again.\n", beadID)
+	fmt.Printf("Reset respawn counter for %s. The hold remains active; resume only after repairing the startup failure.\n", beadID)
 	return nil
 }
 
@@ -292,6 +304,11 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 	townRoot, err := workspace.FindFromCwd()
 	if err != nil {
 		return fmt.Errorf("finding town root: %w", err)
+	}
+	if !slingDryRun {
+		if reason := dispatchFreezeReason(townRoot); reason != "" {
+			return fmt.Errorf("cannot sling: %s", reason)
+		}
 	}
 	townBeadsDir := filepath.Join(townRoot, ".beads")
 

@@ -14,7 +14,9 @@ import (
 	beadsdk "github.com/steveyegge/beads"
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/convoy"
+	"github.com/steveyegge/gastown/internal/deacon"
 	"github.com/steveyegge/gastown/internal/util"
+	"github.com/steveyegge/gastown/internal/witness"
 )
 
 const (
@@ -536,6 +538,11 @@ func (m *ConvoyManager) findStranded() ([]strandedConvoyInfo, error) {
 // rig is parked, or the sling command fails. This ensures convoys progress
 // even when some issues target unavailable rigs.
 func (m *ConvoyManager) feedFirstReady(c strandedConvoyInfo) {
+	if err := deacon.CheckPatrolAllowed(m.townRoot); err != nil {
+		m.logger("Convoy %s: dispatch held: %v", c.ID, err)
+		return
+	}
+
 	if len(c.ReadyIssues) == 0 {
 		return
 	}
@@ -555,6 +562,13 @@ func (m *ConvoyManager) feedFirstReady(c strandedConvoyInfo) {
 
 		if m.isRigParked(rig) {
 			m.logger("Convoy %s: rig %s is parked, skipping %s", c.ID, rig, issueID)
+			continue
+		}
+
+		// Do not run an expensive sling every scan after the budget is exhausted.
+		// The launch boundary reserves atomically; this is only an early filter.
+		if witness.ShouldBlockRespawn(m.townRoot, issueID) {
+			m.logger("Convoy %s: startup budget blocks %s; investigation required", c.ID, issueID)
 			continue
 		}
 

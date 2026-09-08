@@ -11,6 +11,7 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/deacon"
 	"github.com/steveyegge/gastown/internal/reaper"
 )
 
@@ -46,8 +47,8 @@ const (
 
 // CompactorDogConfig holds configuration for the compactor_dog patrol.
 type CompactorDogConfig struct {
-	Enabled     bool     `json:"enabled"`
-	IntervalStr string   `json:"interval,omitempty"`
+	Enabled     bool   `json:"enabled"`
+	IntervalStr string `json:"interval,omitempty"`
 	// Threshold is the minimum commit count before compaction triggers.
 	// Defaults to 2000 if not set.
 	Threshold int `json:"threshold,omitempty"`
@@ -125,7 +126,7 @@ func compactorDogKeepRecent(config *DaemonPatrolConfig) int {
 // (4) concurrent write retry with error classification, (5) row count integrity
 // verification. See mol-dog-compactor.formula.toml for full rationale.
 func (d *Daemon) runCompactorDog() {
-	if !d.isPatrolActive("compactor_dog") {
+	if !d.canRunPatrol("compactor_dog") {
 		return
 	}
 
@@ -146,7 +147,7 @@ func (d *Daemon) runCompactorDog() {
 		return
 	}
 
-	mol.closeStep("inspect")
+	mol.closeStep("inspect", fmt.Sprintf("database candidates=%d; commit counts and operation results follow", len(databases)))
 
 	compacted := 0
 	skipped := 0
@@ -203,6 +204,7 @@ func (d *Daemon) runCompactorDog() {
 			// Order matters: rebase first (compactDatabase), gc second.
 			if err := d.compactorRunGC(dbName); err != nil {
 				d.logger.Printf("compactor_dog: %s: gc after compaction failed: %v", dbName, err)
+				errors++
 			}
 			// Force-push to DoltHub remote after compaction. Flatten rewrites
 			// the commit graph, so standard push always fails with non-fast-forward.
@@ -210,17 +212,22 @@ func (d *Daemon) runCompactorDog() {
 			// before compaction, and compactDatabase verified integrity.
 			if err := d.compactorForcePush(dbName); err != nil {
 				d.logger.Printf("compactor_dog: %s: force-push failed: %v", dbName, err)
+				errors++
 			}
 		}
 	}
 
 	if errors > 0 {
-		mol.failStep("compact", fmt.Sprintf("%d databases had errors", errors))
+		mol.failStep("compact", fmt.Sprintf("compacted=%d, skipped=%d, errors=%d (including post-compaction maintenance)", compacted, skipped, errors))
 	} else {
-		mol.closeStep("compact")
+		mol.closeStep("compact", fmt.Sprintf("compaction returned: compacted=%d, skipped=%d", compacted, skipped))
 	}
 
-	mol.closeStep("verify")
+	if compacted == 0 {
+		mol.closeStep("verify", "skipped: no database completed compaction and its integrity check")
+	} else {
+		mol.closeStep("verify", fmt.Sprintf("integrity checks passed for %d compacted databases; skipped=%d, errors=%d", compacted, skipped, errors))
+	}
 
 	d.logger.Printf("compactor_dog: cycle complete — compacted=%d skipped=%d errors=%d",
 		compacted, skipped, errors)
@@ -544,6 +551,7 @@ func (d *Daemon) surgicalRebaseOnce(dbName string, keepRecent int) error {
 }
 
 // surgicalCleanup switches back to main and removes rebase branches.
+//
 //nolint:unparam // baseBranch always "compact-base" — API kept flexible for future callers
 func (d *Daemon) surgicalCleanup(db *sql.DB, baseBranch, workBranch string) {
 	ctx, cancel := context.WithTimeout(context.Background(), compactorQueryTimeout)
@@ -601,6 +609,12 @@ func (d *Daemon) compactorCleanup(db *sql.DB, dbName string) {
 
 // compactorOpenDB opens a connection to the Dolt server for the given database.
 func (d *Daemon) compactorOpenDB(dbName string) (*sql.DB, error) {
+	if err := deacon.CheckPatrolAllowed(d.config.TownRoot); err != nil {
+		return nil, err
+	}
+	if err := reaper.ValidateDBName(dbName); err != nil {
+		return nil, err
+	}
 	dsn := fmt.Sprintf("root@tcp(%s:%d)/%s?parseTime=true&timeout=5s&readTimeout=30s&writeTimeout=30s",
 		"127.0.0.1", d.doltServerPort(), dbName)
 	return sql.Open("mysql", dsn)
