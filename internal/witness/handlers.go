@@ -2832,6 +2832,9 @@ then either close the bead or reset the respawn counter.`,
 
 	// Track respawn count for audit and storm detection.
 	respawnCount := RecordBeadRespawn(workDir, hookBead)
+	if respawnCount < 0 {
+		return false
+	}
 
 	// Reset bead status to open and clear assignee
 	if err := bd.Run(workDir, "update", hookBead, "--status=open", "--assignee="); err != nil {

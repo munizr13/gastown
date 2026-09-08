@@ -97,6 +97,9 @@ func (m *Manager) stopNudgePoller(sessionID string) {
 // agentOverride allows specifying an alternate agent alias (e.g., for testing).
 // Restarts are handled by daemon via ensureDeaconRunning on each heartbeat.
 func (m *Manager) Start(agentOverride string) error {
+	if err := CheckPatrolAllowed(m.townRoot); err != nil {
+		return err
+	}
 	t := m.tmux
 	sessionID := m.SessionName()
 

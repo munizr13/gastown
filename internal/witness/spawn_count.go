@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/steveyegge/gastown/internal/atomicfile"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/lock"
 	"github.com/steveyegge/gastown/internal/workspace"
@@ -35,19 +36,40 @@ func beadRespawnStateFile(townRoot string) string {
 	return filepath.Join(townRoot, "witness", "bead-respawn-counts.json")
 }
 
-func loadBeadRespawnState(townRoot string) *beadRespawnState {
-	data, err := os.ReadFile(beadRespawnStateFile(townRoot)) //nolint:gosec // G304: path from trusted townRoot
+func loadBeadRespawnState(townRoot string) (*beadRespawnState, error) {
+	data, err := os.ReadFile(beadRespawnStateFile(townRoot))
+	if os.IsNotExist(err) {
+		if _, statErr := os.Lstat(beadRespawnStateFile(townRoot)); statErr == nil {
+			return nil, err
+		} else if !os.IsNotExist(statErr) {
+			return nil, statErr
+		}
+		return &beadRespawnState{Beads: make(map[string]*beadRespawnRecord)}, nil
+	}
 	if err != nil {
-		return &beadRespawnState{Beads: make(map[string]*beadRespawnRecord)}
+		return nil, err
 	}
 	var state beadRespawnState
 	if err := json.Unmarshal(data, &state); err != nil {
-		return &beadRespawnState{Beads: make(map[string]*beadRespawnRecord)}
+		return nil, err
 	}
 	if state.Beads == nil {
-		state.Beads = make(map[string]*beadRespawnRecord)
+		return nil, fmt.Errorf("respawn state is missing beads")
 	}
-	return &state
+	for id, rec := range state.Beads {
+		if rec == nil || rec.Count < 0 || rec.BeadID != id {
+			return nil, fmt.Errorf("invalid respawn record for %s", id)
+		}
+	}
+	return &state, nil
+}
+
+func lockBeadRespawnState(townRoot string) (func(), error) {
+	path := beadRespawnStateFile(townRoot)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return nil, err
+	}
+	return lock.FlockAcquire(path + ".flock")
 }
 
 func saveBeadRespawnState(townRoot string, state *beadRespawnState) error {
@@ -60,7 +82,7 @@ func saveBeadRespawnState(townRoot string, state *beadRespawnState) error {
 	if err != nil {
 		return fmt.Errorf("marshaling respawn state: %w", err)
 	}
-	return os.WriteFile(stateFile, data, 0600)
+	return atomicfile.WriteFile(stateFile, data, 0600)
 }
 
 // ShouldBlockRespawn returns true if the bead has already been respawned
@@ -78,13 +100,17 @@ func ShouldBlockRespawn(workDir, beadID string) bool {
 	}
 	maxRespawns := config.LoadOperationalConfig(townRoot).GetWitnessConfig().MaxBeadRespawnsV()
 
-	// Cross-process flock to serialize with other witness instances.
-	unlock, flockErr := lock.FlockAcquire(beadRespawnStateFile(townRoot) + ".flock")
-	if flockErr == nil {
-		defer unlock()
+	unlock, err := lockBeadRespawnState(townRoot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "respawn check blocked: %v\n", err)
+		return true
 	}
-
-	state := loadBeadRespawnState(townRoot)
+	defer unlock()
+	state, err := loadBeadRespawnState(townRoot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "respawn check blocked: %v\n", err)
+		return true
+	}
 	rec, ok := state.Beads[beadID]
 	if !ok {
 		return false
@@ -92,38 +118,55 @@ func ShouldBlockRespawn(workDir, beadID string) bool {
 	return rec.Count >= maxRespawns
 }
 
-// RecordBeadRespawn increments the respawn count for beadID and returns the new count.
-// workDir is the rig path; townRoot is resolved internally via workspace.Find.
-// On state file errors the count is still incremented in memory and returned, so the
-// caller can log/warn without blocking the respawn itself.
-//
-// Serialized via respawnMu (in-process) and flock (cross-process) to prevent
-// concurrent patrol cycles from racing on the load-modify-save cycle.
+// ReserveBeadRespawn checks and consumes one startup attempt under the same
+// process/file lock. A failed or interrupted launch still consumes its attempt;
+// only explicit investigation and reset reopen the shared budget.
+func ReserveBeadRespawn(workDir, beadID string) (int, error) {
+	return recordBeadRespawn(workDir, beadID, true)
+}
+
+// RecordBeadRespawn records legacy witness recovery attempts. A negative result
+// means persistence failed; callers must not re-dispatch that recovery.
 func RecordBeadRespawn(workDir, beadID string) int {
+	count, err := recordBeadRespawn(workDir, beadID, false)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "respawn recording blocked: %v\n", err)
+		return -1
+	}
+	return count
+}
+
+func recordBeadRespawn(workDir, beadID string, enforceLimit bool) (int, error) {
 	respawnMu.Lock()
 	defer respawnMu.Unlock()
-
 	townRoot, err := workspace.Find(workDir)
 	if err != nil || townRoot == "" {
 		townRoot = workDir
 	}
-
-	// Cross-process flock to serialize with other witness instances.
-	unlock, flockErr := lock.FlockAcquire(beadRespawnStateFile(townRoot) + ".flock")
-	if flockErr == nil {
-		defer unlock()
+	unlock, err := lockBeadRespawnState(townRoot)
+	if err != nil {
+		return 0, err
 	}
-
-	state := loadBeadRespawnState(townRoot)
-	rec, ok := state.Beads[beadID]
-	if !ok {
+	defer unlock()
+	state, err := loadBeadRespawnState(townRoot)
+	if err != nil {
+		return 0, err
+	}
+	rec := state.Beads[beadID]
+	if rec == nil {
 		rec = &beadRespawnRecord{BeadID: beadID}
 		state.Beads[beadID] = rec
 	}
+	limit := config.LoadOperationalConfig(townRoot).GetWitnessConfig().MaxBeadRespawnsV()
+	if enforceLimit && rec.Count >= limit {
+		return rec.Count, fmt.Errorf("respawn limit reached for %s (%d attempts); investigate before re-dispatching. Reset only after containing automatic feeders: gt sling respawn-reset %s", beadID, limit, beadID)
+	}
 	rec.Count++
 	rec.LastRespawn = time.Now().UTC()
-	_ = saveBeadRespawnState(townRoot, state) // Non-fatal: tracking failure must not block respawn
-	return rec.Count
+	if err := saveBeadRespawnState(townRoot, state); err != nil {
+		return 0, err
+	}
+	return rec.Count, nil
 }
 
 // ResetBeadRespawnCount resets the respawn counter for beadID to zero.
@@ -137,13 +180,15 @@ func ResetBeadRespawnCount(workDir, beadID string) error {
 		townRoot = workDir
 	}
 
-	// Cross-process flock to serialize with other witness instances.
-	unlock, flockErr := lock.FlockAcquire(beadRespawnStateFile(townRoot) + ".flock")
-	if flockErr == nil {
-		defer unlock()
+	unlock, err := lockBeadRespawnState(townRoot)
+	if err != nil {
+		return err
 	}
-
-	state := loadBeadRespawnState(townRoot)
+	defer unlock()
+	state, err := loadBeadRespawnState(townRoot)
+	if err != nil {
+		return err
+	}
 	delete(state.Beads, beadID)
 	return saveBeadRespawnState(townRoot, state)
 }

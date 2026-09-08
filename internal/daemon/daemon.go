@@ -868,6 +868,11 @@ func (d *Daemon) heartbeat(state *State) {
 		return
 	}
 
+	if err := deacon.CheckPatrolAllowed(d.config.TownRoot); err != nil {
+		d.logger.Printf("Skipping agent management: %v", err)
+		return
+	}
+
 	d.metrics.recordHeartbeat(d.ctx)
 	d.logger.Println("Heartbeat starting (recovery-focused)")
 

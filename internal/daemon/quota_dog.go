@@ -41,7 +41,7 @@ func quotaDogInterval(config *DaemonPatrolConfig) time.Duration {
 // This follows the daemon's "dumb scheduler" principle: the daemon schedules,
 // existing commands do the work. No LLM or molecule needed — pure mechanical rotation.
 func (d *Daemon) runQuotaDog() {
-	if !d.isPatrolActive("quota_dog") {
+	if !d.canRunPatrol("quota_dog") {
 		return
 	}
 

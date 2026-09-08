@@ -47,7 +47,7 @@ func TestDispatchFreezeReasonDeaconPause(t *testing.T) {
 	}
 }
 
-func TestDispatchFreezeReasonCorruptPauseFailsOpen(t *testing.T) {
+func TestDispatchFreezeReasonCorruptPauseFailsClosed(t *testing.T) {
 	town := t.TempDir()
 	pauseFile := deacon.GetPauseFile(town)
 	if err := os.MkdirAll(filepath.Dir(pauseFile), 0o755); err != nil {
@@ -56,10 +56,9 @@ func TestDispatchFreezeReasonCorruptPauseFailsOpen(t *testing.T) {
 	if err := os.WriteFile(pauseFile, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// A corrupt pause file must not freeze the factory — the e-stop stays
-	// the hard control; corrupt state fails open with a warning.
-	if reason := dispatchFreezeReason(town); reason != "" {
-		t.Fatalf("corrupt pause file should fail open, got: %s", reason)
+	// Unreadable pause state cannot authorize dispatch.
+	if reason := dispatchFreezeReason(town); !strings.Contains(reason, "cannot read Deacon pause state") {
+		t.Fatalf("corrupt pause file should block dispatch, got: %s", reason)
 	}
 }
 

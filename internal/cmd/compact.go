@@ -183,6 +183,12 @@ func runCompact(cmd *cobra.Command, args []string) error {
 	}
 
 	townRoot := beads.FindTownRoot(workDir)
+	if !compactDryRun {
+		if reason := dispatchFreezeReason(townRoot); reason != "" {
+			return fmt.Errorf("cannot compact: %s", reason)
+		}
+	}
+
 	rigName := compactRig
 	if rigName == "" {
 		rigName = os.Getenv("GT_RIG")

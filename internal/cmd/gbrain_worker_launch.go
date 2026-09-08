@@ -286,7 +286,7 @@ func enforceGBrainWorkerLaunchDecision(req gbrainWorkerLaunchDecisionRequest) er
 	if err != nil {
 		return fmt.Errorf("GBrain worker launch decision request failed: %w", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 512))

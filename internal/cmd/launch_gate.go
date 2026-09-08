@@ -127,10 +127,7 @@ var launchGateCheckCmd = &cobra.Command{
 				return err
 			}
 		}
-		eval, err := evaluateFromScratchLaunchGate(townRoot, args[0], launchGateCheckBead, info, launchGateDispatchOptions{})
-		if err != nil {
-			return err
-		}
+		eval := evaluateFromScratchLaunchGate(townRoot, args[0], info, launchGateDispatchOptions{})
 		printLaunchGateEvaluation(eval)
 		if eval.Status == "blocked" {
 			return fmt.Errorf("launch gate blocked for rig %q", args[0])
@@ -146,10 +143,7 @@ func init() {
 }
 
 func enforceFromScratchLaunchGate(townRoot, rigName, beadID string, info *beadInfo, opts launchGateDispatchOptions) error {
-	eval, err := evaluateFromScratchLaunchGate(townRoot, rigName, beadID, info, opts)
-	if err != nil {
-		return err
-	}
+	eval := evaluateFromScratchLaunchGate(townRoot, rigName, info, opts)
 	if eval.Status != "blocked" {
 		return nil
 	}
@@ -187,7 +181,7 @@ func enforceFromScratchLaunchGateForTarget(townRoot, target, beadID string, info
 	return enforceFromScratchLaunchGate(townRoot, rigName, beadID, info, opts)
 }
 
-func evaluateFromScratchLaunchGate(townRoot, rigName, beadID string, info *beadInfo, opts launchGateDispatchOptions) (*launchGateEvaluation, error) {
+func evaluateFromScratchLaunchGate(townRoot, rigName string, info *beadInfo, opts launchGateDispatchOptions) *launchGateEvaluation {
 	repoRoot, markerPath, found := findLaunchGateMarker(townRoot, rigName)
 	eval := &launchGateEvaluation{
 		RigName:    rigName,
@@ -197,7 +191,7 @@ func evaluateFromScratchLaunchGate(townRoot, rigName, beadID string, info *beadI
 		Reason:     "no launch-gate marker found",
 	}
 	if !found {
-		return eval, nil
+		return eval
 	}
 	eval.ReceiptPath = filepath.Join(repoRoot, launchGateReceiptRelPath)
 	eval.OverridePath = filepath.Join(repoRoot, launchGateOverrideRelPath)
@@ -207,35 +201,35 @@ func evaluateFromScratchLaunchGate(townRoot, rigName, beadID string, info *beadI
 		eval.Status = "blocked"
 		eval.Reason = "invalid marker"
 		eval.Missing = []string{fmt.Sprintf("valid marker JSON at %s: %v", launchGateMarkerRelPath, err)}
-		return eval, nil
+		return eval
 	}
 	if marker.Contract != launchGateMarkerContract {
 		eval.Status = "blocked"
 		eval.Reason = "invalid marker contract"
 		eval.Missing = []string{fmt.Sprintf("%s contract must be %q", launchGateMarkerRelPath, launchGateMarkerContract)}
-		return eval, nil
+		return eval
 	}
 	if marker.Required != nil && !*marker.Required {
 		eval.Status = "disabled"
 		eval.Reason = "marker explicitly disabled"
-		return eval, nil
+		return eval
 	}
 	if strings.TrimSpace(marker.Mode) != "" && !strings.EqualFold(marker.Mode, "from_scratch") {
 		eval.Status = "disabled"
 		eval.Reason = "marker is not in from_scratch mode"
-		return eval, nil
+		return eval
 	}
 
 	if isLaunchPlanningDispatch(info, opts) {
 		eval.Status = "planning_allowed"
 		eval.Reason = "planning/review dispatch is allowed before implementation gate completion"
-		return eval, nil
+		return eval
 	}
 
 	if ok, missing := validateLaunchGateOverride(eval.OverridePath); ok {
 		eval.Status = "override_allowed"
 		eval.Reason = "explicit override recorded"
-		return eval, nil
+		return eval
 	} else if len(missing) > 0 && fileExists(eval.OverridePath) {
 		eval.Missing = append(eval.Missing, missing...)
 	}
@@ -243,7 +237,7 @@ func evaluateFromScratchLaunchGate(townRoot, rigName, beadID string, info *beadI
 	if ok, missing := validateLaunchGateReceipt(repoRoot, marker, eval.ReceiptPath); ok {
 		eval.Status = "ready"
 		eval.Reason = "mol-idea-to-plan completion receipt is valid"
-		return eval, nil
+		return eval
 	} else {
 		eval.Missing = append(eval.Missing, missing...)
 	}
@@ -252,7 +246,7 @@ func evaluateFromScratchLaunchGate(townRoot, rigName, beadID string, info *beadI
 	eval.Reason = "completion receipt or explicit override required"
 	eval.Missing = launchGateUniqueStrings(eval.Missing)
 	sort.Strings(eval.Missing)
-	return eval, nil
+	return eval
 }
 
 func printLaunchGateEvaluation(eval *launchGateEvaluation) {
@@ -555,7 +549,7 @@ func isAllowDecision(value string) bool {
 
 // firstNonEmpty lives in mq_pr_status.go — upstream adopted an identical
 // implementation during the 2026-08 rebase, so ours was removed rather than
-// renamed. Same package, same behaviour.
+// renamed. Same package, same behavior.
 
 func launchGateUniqueStrings(values []string) []string {
 	seen := map[string]bool{}

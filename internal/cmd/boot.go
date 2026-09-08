@@ -285,9 +285,13 @@ func runDegradedTriage(b *boot.Boot) (action, target string, err error) {
 	// Abort triage if a shutdown is in progress. Without this check, Boot could
 	// detect Deacon as "down" during the graceful shutdown window and restart it,
 	// creating a zombie Deacon that survives gt down.
-	townRoot, _ := workspace.FindFromCwd()
+	townRoot := b.TownRoot()
 	if townRoot != "" && daemon.IsShutdownInProgress(townRoot) {
 		return "nothing", "shutdown-in-progress", nil
+	}
+
+	if err := deacon.CheckPatrolAllowed(townRoot); err != nil {
+		return "nothing", err.Error(), nil
 	}
 
 	tm := b.Tmux()

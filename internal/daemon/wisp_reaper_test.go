@@ -1,7 +1,11 @@
 package daemon
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,7 +14,78 @@ import (
 	"time"
 
 	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/deacon"
 )
+
+func reaperReceiptFixture(t *testing.T) (*Daemon, *dogMol, string) {
+	t.Helper()
+	dir := t.TempDir()
+	bd, receipts := filepath.Join(dir, "bd"), filepath.Join(dir, "receipts")
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$*\" >> %q\n", receipts)
+	if err := os.WriteFile(bd, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	d := &Daemon{config: &Config{TownRoot: dir}, logger: log.New(io.Discard, "", 0)}
+	mol := &dogMol{rootID: "fixture-root", bdPath: bd, townRoot: dir, logger: d.logger,
+		stepIDs: map[string]string{"scan": "scan", "reap": "reap", "purge": "purge", "auto-close": "auto-close", "report": "report"}}
+	return d, mol, receipts
+}
+
+func TestInlineReaperInvalidDatabaseCannotClaimExecution(t *testing.T) {
+	for _, dryRun := range []bool{false, true} {
+		t.Run(fmt.Sprint(dryRun), func(t *testing.T) {
+			d, mol, receiptFile := reaperReceiptFixture(t)
+			d.reapWispsInline(&WispReaperConfig{Databases: []string{"invalid database"}, DryRun: dryRun}, time.Hour, time.Hour, mol)
+			data, err := os.ReadFile(receiptFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipts := string(data)
+			for _, step := range []string{"reap", "purge", "auto-close"} {
+				want := fmt.Sprintf("close %s --reason failed: %s: dry_run=%t, databases_returned=0, schema_skipped=0, errors=1", step, step, dryRun)
+				if !strings.Contains(receipts, want) {
+					t.Fatalf("missing failure for %s: %s", step, receipts)
+				}
+			}
+			for _, phase := range []string{"plugin_receipts", "plugin_dispatches"} {
+				if !strings.Contains(receipts, phase+"={databases_returned=0, schema_skipped=0, errors=1}") {
+					t.Fatalf("unreported auxiliary failure: %s", receipts)
+				}
+			}
+		})
+	}
+}
+
+func TestReaperReceiptDistinguishesSkippedAndPartialOperationResults(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stats reaperPhaseStats
+		want  string
+	}{
+		{"all-skipped", reaperPhaseStats{skipped: 2}, "skipped: no database operation returned; purge: dry_run=true, databases_returned=0, schema_skipped=2, errors=0"},
+		{"partial-failure", reaperPhaseStats{returned: 1, errors: 1}, "failed: purge: dry_run=true, databases_returned=1, schema_skipped=0, errors=1"},
+		{"scoped-success", reaperPhaseStats{returned: 1, skipped: 1}, "returned: purge: dry_run=true, databases_returned=1, schema_skipped=1, errors=0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, mol, receiptFile := reaperReceiptFixture(t)
+			tc.stats.record(mol, "purge", true, "wisps=0, mail=0")
+			data, err := os.ReadFile(receiptFile)
+			if err != nil || !strings.Contains(string(data), tc.want) {
+				t.Fatalf("incorrect execution receipt: %s (%v)", data, err)
+			}
+		})
+	}
+}
+
+func TestReaperDatabaseGateRechecksHoldBeforeConnection(t *testing.T) {
+	d, _, _ := reaperReceiptFixture(t)
+	if err := deacon.Pause(d.config.TownRoot, "fixture hold", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if db, err := d.openReaperDatabase("fixture", time.Second); db != nil || !errors.Is(err, deacon.ErrPatrolHeld) {
+		t.Fatalf("held database admitted: %v %v", db, err)
+	}
+}
 
 func TestWispReaperInterval(t *testing.T) {
 	// Default (now 1h after Dog-driven refactor)
@@ -116,6 +191,61 @@ func TestDispatchReaperDogUsesDogPoolSling(t *testing.T) {
 		if args[i] != want {
 			t.Fatalf("gt arg %d = %q, want %q (all args: %v)", i, args[i], want, args)
 		}
+	}
+}
+
+func TestSuccessfulReaperDispatchDoesNotCreateOrCloseExecutionSteps(t *testing.T) {
+	dir := t.TempDir()
+	fakeGT := filepath.Join(dir, "gt")
+	fakeBD := filepath.Join(dir, "bd")
+	marker := filepath.Join(dir, "duplicate-molecule")
+	if err := os.WriteFile(fakeGT, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fakeBD, []byte("#!/bin/sh\necho called > '"+marker+"'\nexit 1\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	d := &Daemon{config: &Config{TownRoot: dir}, gtPath: fakeGT, bdPath: fakeBD, logger: log.New(io.Discard, "", 0),
+		patrolConfig: &DaemonPatrolConfig{Patrols: &PatrolsConfig{WispReaper: &WispReaperConfig{Enabled: true}}}}
+	d.reapWisps()
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("dispatch created a duplicate execution molecule")
+	}
+}
+
+func TestReaperDispatchDistinguishesNotStartedFromUnknownOutcome(t *testing.T) {
+	dir := t.TempDir()
+	d := &Daemon{config: &Config{TownRoot: dir}, gtPath: filepath.Join(dir, "missing-gt")}
+	if err := d.dispatchReaperDog(nil); !errors.Is(err, errReaperDispatchNotStarted) {
+		t.Fatalf("missing executable must establish not-started: %v", err)
+	}
+	for _, ending := range []string{"exit 1", "kill -TERM $$"} {
+		t.Run(ending, func(t *testing.T) {
+			dir := t.TempDir()
+			gt, bd := filepath.Join(dir, "gt"), filepath.Join(dir, "bd")
+			started, fallback := filepath.Join(dir, "started"), filepath.Join(dir, "fallback")
+			if err := os.WriteFile(gt, []byte(fmt.Sprintf("#!/bin/sh\ntouch %q\n%s\n", started, ending)), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(bd, []byte(fmt.Sprintf("#!/bin/sh\ntouch %q\nexit 1\n", fallback)), 0755); err != nil {
+				t.Fatal(err)
+			}
+			var logs bytes.Buffer
+			d := &Daemon{config: &Config{TownRoot: dir}, gtPath: gt, bdPath: bd, logger: log.New(&logs, "", 0),
+				patrolConfig: &DaemonPatrolConfig{Patrols: &PatrolsConfig{WispReaper: &WispReaperConfig{
+					Enabled: true, Databases: []string{"invalid database name"},
+				}}}}
+			d.reapWisps()
+			if _, err := os.Stat(started); err != nil {
+				t.Fatal("test did not reach the started dispatch")
+			}
+			if _, err := os.Stat(fallback); !os.IsNotExist(err) {
+				t.Fatal("uncertain dispatch triggered a second execution path")
+			}
+			if !strings.Contains(logs.String(), "dispatch outcome unconfirmed") {
+				t.Fatalf("uncertainty was hidden: %s", logs.String())
+			}
+		})
 	}
 }
 

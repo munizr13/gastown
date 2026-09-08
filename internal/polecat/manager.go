@@ -145,6 +145,50 @@ type Manager struct {
 	namePool *NamePool
 	tmux     *tmux.Tmux
 	townRoot string // Computed once at construction; used by agentBeadID for deterministic IDs
+
+	diskSpaceCheck func(string) (util.DiskSpaceLevel, string, error)
+}
+
+func (m *Manager) checkSpawnDiskSpace() error {
+	check := m.diskSpaceCheck
+	if check == nil {
+		check = util.CheckDiskSpace
+	}
+	if level, msg, err := check(m.rig.Path); err == nil && level == util.DiskSpaceCritical {
+		return fmt.Errorf("%w: %s", ErrDiskSpaceLow, msg)
+	}
+	return nil
+}
+
+// releasePendingSpawn releases only this process's reservation before a worktree
+// exists. The caller holds the pool and polecat locks, excluding allocation and
+// stale-marker cleanup until this reservation is released.
+// InUse is not persisted; saving the pool here could overwrite an overflow counter
+// advanced by another allocator.
+func (m *Manager) releasePendingSpawn(name string) error {
+	path := m.pendingPath(name)
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("checking spawn reservation: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("spawn reservation for %s is not a regular file", name)
+	}
+	owner, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading spawn reservation: %w", err)
+	}
+	if string(owner) != strconv.Itoa(os.Getpid()) {
+		return nil
+	}
+	m.namePool.Release(name)
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("removing spawn reservation: %w", err)
+	}
+	return nil
 }
 
 // NewManager creates a new polecat manager.
@@ -725,9 +769,15 @@ func (m *Manager) AllocateAndAdd(opts AddOptions) (string, *Polecat, error) {
 func (m *Manager) addWithOptionsLocked(name string, opts AddOptions, polecatDir string) (_ *Polecat, retErr error) {
 	defer func() { telemetry.RecordPolecatSpawn(context.Background(), name, retErr) }()
 
-	// Pre-check: Verify sufficient disk space before expensive worktree creation.
-	if level, msg, err := util.CheckDiskSpace(m.rig.Path); err == nil && level == util.DiskSpaceCritical {
-		return nil, fmt.Errorf("%w: %s", ErrDiskSpaceLow, msg)
+	if err := m.checkSpawnDiskSpace(); err != nil {
+		// AllocateAndAdd already owns this name and directory. Release transient
+		// pool state before removing the directory, without resetting an agent bead
+		// or recursively deleting contents that this attempt has not created.
+		m.namePool.Release(name)
+		if cleanupErr := os.Remove(polecatDir); cleanupErr != nil && !os.IsNotExist(cleanupErr) {
+			return nil, errors.Join(err, fmt.Errorf("removing refused spawn directory: %w", cleanupErr))
+		}
+		return nil, err
 	}
 
 	clonePath := filepath.Join(polecatDir, m.rig.Name)
@@ -877,6 +927,15 @@ func (m *Manager) addWithOptionsLocked(name string, opts AddOptions, polecatDir 
 // cross-beads routing issues when slinging work to new polecats.
 func (m *Manager) AddWithOptions(name string, opts AddOptions) (_ *Polecat, retErr error) {
 	defer func() { telemetry.RecordPolecatSpawn(context.Background(), name, retErr) }()
+	// Match AllocateAndAdd's lock order. Keep reservation admission/rollback
+	// atomic with allocation and stale-marker cleanup, then release the pool lock
+	// before the expensive worktree operations.
+	poolLock, err := m.lockPool()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = poolLock.Unlock() }()
+
 	// Acquire per-polecat file lock to prevent concurrent Add/Remove/Repair races
 	fl, err := m.lockPolecat(name)
 	if err != nil {
@@ -893,8 +952,8 @@ func (m *Manager) AddWithOptions(name string, opts AddOptions) (_ *Polecat, retE
 	// beads state — all requiring disk I/O. If the disk is nearly full, fail early
 	// with a clear message rather than leaving a half-created polecat.
 	// See: disk-space-resilience — 5 polecats died silently on disk exhaustion.
-	if level, msg, err := util.CheckDiskSpace(m.rig.Path); err == nil && level == util.DiskSpaceCritical {
-		return nil, fmt.Errorf("%w: %s", ErrDiskSpaceLow, msg)
+	if err := m.checkSpawnDiskSpace(); err != nil {
+		return nil, errors.Join(err, m.releasePendingSpawn(name))
 	}
 
 	// New structure: polecats/<name>/<rigname>/ for LLM ergonomics
@@ -912,13 +971,14 @@ func (m *Manager) AddWithOptions(name string, opts AddOptions) (_ *Polecat, retE
 
 	// Create polecat directory (polecats/<name>/)
 	if err := os.MkdirAll(polecatDir, 0755); err != nil {
-		return nil, fmt.Errorf("creating polecat dir: %w", err)
+		return nil, errors.Join(fmt.Errorf("creating polecat dir: %w", err), m.releasePendingSpawn(name))
 	}
 
 	// Directory created — remove the allocation reservation marker.
 	// reconcilePoolInternal will now find the directory directly and treat the
 	// name as in-use without needing the .pending file.
 	_ = os.Remove(m.pendingPath(name))
+	_ = poolLock.Unlock()
 
 	// Track resources created for rollback on error.
 	// AddWithOptions creates several resources in sequence (directory, worktree,

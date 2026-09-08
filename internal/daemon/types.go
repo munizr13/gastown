@@ -17,6 +17,7 @@ import (
 
 	"github.com/steveyegge/gastown/internal/atomicfile"
 	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/deacon"
 )
 
 // Config holds daemon configuration.
@@ -383,6 +384,19 @@ func (d *Daemon) isPatrolActive(patrol string) bool {
 		return false
 	}
 	return IsPatrolEnabled(d.patrolConfig, patrol)
+}
+
+// canRunPatrol checks a timer invocation, separately from timer registration.
+// A paused daemon must still register timers so an explicit resume takes effect.
+func (d *Daemon) canRunPatrol(patrol string) bool {
+	if !d.isPatrolActive(patrol) {
+		return false
+	}
+	if err := deacon.CheckPatrolAllowed(d.config.TownRoot); err != nil {
+		d.logger.Printf("%s: skipping: %v", patrol, err)
+		return false
+	}
+	return true
 }
 
 // LifecycleAction represents a lifecycle request action.

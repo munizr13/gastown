@@ -11,6 +11,7 @@ import (
 
 	"github.com/steveyegge/gastown/internal/cli"
 	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/deacon"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/tmux"
 )
@@ -83,6 +84,10 @@ func (m *SessionManager) kennelPath(dogName string) string {
 // Start creates and starts a new session for a dog.
 // Dogs run agent sessions that check mail for work and execute formulas.
 func (m *SessionManager) Start(dogName string, opts SessionStartOptions) error {
+	if err := deacon.CheckPatrolAllowed(m.townRoot); err != nil {
+		return err
+	}
+
 	kennelDir := m.kennelPath(dogName)
 	if _, err := os.Stat(kennelDir); os.IsNotExist(err) {
 		return fmt.Errorf("%w: %s", ErrDogNotFound, dogName)
@@ -241,6 +246,10 @@ func (m *SessionManager) GetPane(dogName string) (string, error) {
 // EnsureRunning ensures a dog session is running, starting it if needed.
 // Returns the pane ID.
 func (m *SessionManager) EnsureRunning(dogName string, opts SessionStartOptions) (string, error) {
+	if err := deacon.CheckPatrolAllowed(m.townRoot); err != nil {
+		return "", err
+	}
+
 	running, err := m.IsRunning(dogName)
 	if err != nil {
 		return "", err

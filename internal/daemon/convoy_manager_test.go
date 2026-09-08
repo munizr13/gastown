@@ -14,7 +14,57 @@ import (
 	"time"
 
 	beadsdk "github.com/steveyegge/beads"
+	"github.com/steveyegge/gastown/internal/deacon"
+	"github.com/steveyegge/gastown/internal/witness"
 )
+
+func TestFeedFirstReady_ExhaustedBudgetDoesNotKeepInvokingSling(t *testing.T) {
+	town := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(town, ".beads"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(town, ".beads", "routes.jsonl"), []byte("{\"prefix\":\"gt-\",\"path\":\"gt/.beads\"}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := witness.ReserveBeadRespawn(town, "gt-issue"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	marker := filepath.Join(town, "sling-called")
+	gt := filepath.Join(town, "fake-gt")
+	if err := os.WriteFile(gt, []byte("#!/bin/sh\necho called >> '"+marker+"'\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	m := NewConvoyManager(town, func(string, ...interface{}) {}, gt, time.Minute, nil, nil, nil)
+	c := strandedConvoyInfo{ID: "hq-cv", ReadyIssues: []string{"gt-issue"}}
+	for i := 0; i < 17; i++ {
+		m.feedFirstReady(c)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("exhausted budget still invoked sling")
+	}
+	if err := witness.ResetBeadRespawnCount(town, "gt-issue"); err != nil {
+		t.Fatal(err)
+	}
+	m.feedFirstReady(c)
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("explicit reset failed to admit normal dispatch", err)
+	}
+}
+
+func TestFeedFirstReady_PatrolHoldPreventsDispatch(t *testing.T) {
+	town := t.TempDir()
+	if err := deacon.Pause(town, "incident", "human"); err != nil {
+		t.Fatal(err)
+	}
+	var messages []string
+	m := NewConvoyManager(town, func(s string, args ...interface{}) { messages = append(messages, fmt.Sprintf(s, args...)) }, "must-not-execute", time.Minute, nil, nil, nil)
+	m.feedFirstReady(strandedConvoyInfo{ID: "hq-cv", ReadyIssues: []string{"gt-issue"}})
+	if len(messages) != 1 || !strings.Contains(messages[0], "dispatch held") {
+		t.Fatalf("missing hold decision: %v", messages)
+	}
+}
 
 // setupTestStore opens a real beads database for integration tests.
 // Skips if unavailable. Caller must run cleanup when done.

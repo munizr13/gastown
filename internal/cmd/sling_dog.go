@@ -90,6 +90,10 @@ func DispatchToDog(dogName string, opts DogDispatchOptions) (*DogDispatchInfo, e
 		return nil, fmt.Errorf("finding town root: %w", err)
 	}
 
+	if reason := dispatchFreezeReason(townRoot); reason != "" {
+		return nil, fmt.Errorf("cannot dispatch dog: %s", reason)
+	}
+
 	rigsConfigPath := filepath.Join(townRoot, "mayor", "rigs.json")
 	rigsConfig, err := config.LoadRigsConfig(rigsConfigPath)
 	if err != nil {

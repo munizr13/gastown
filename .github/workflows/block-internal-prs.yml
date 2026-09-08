@@ -9,8 +9,13 @@ permissions: {}
 jobs:
   block-internal-prs:
     name: Block Internal PRs
-    # Only run if PR is from the same repo (not a fork)
-    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'renovate[bot]'
+    # The downstream custom branch requires reviewed PRs for core changes.
+    # Preserve the internal-PR policy for every other repository and target.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'renovate[bot]' &&
+      !(github.repository == 'munizr13/gastown' &&
+        github.event.pull_request.base.ref == 'renascentia/custom')
     runs-on: ubuntu-latest
     permissions:
       issues: write

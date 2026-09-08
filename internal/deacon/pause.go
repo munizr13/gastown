@@ -3,9 +3,12 @@ package deacon
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/steveyegge/gastown/internal/atomicfile"
 )
 
 // PauseState represents the Deacon pause file contents.
@@ -38,17 +41,30 @@ func IsPaused(townRoot string) (bool, *PauseState, error) {
 	data, err := os.ReadFile(pauseFile) //nolint:gosec // G304: path is constructed from trusted townRoot
 	if err != nil {
 		if os.IsNotExist(err) {
+			// A dangling pause symlink is unreadable state, not proof that the
+			// pause file is absent. Preserve fail-closed admission in that case.
+			if _, statErr := os.Lstat(pauseFile); statErr == nil {
+				return false, nil, err
+			} else if !os.IsNotExist(statErr) {
+				return false, nil, statErr
+			}
 			return false, nil, nil
 		}
 		return false, nil, err
 	}
 
-	var state PauseState
+	var state struct {
+		PauseState
+		Paused *bool `json:"paused"`
+	}
 	if err := json.Unmarshal(data, &state); err != nil {
 		return false, nil, err
 	}
-
-	return state.Paused, &state, nil
+	if state.Paused == nil {
+		return false, nil, fmt.Errorf("pause file is missing a boolean paused field")
+	}
+	state.PauseState.Paused = *state.Paused
+	return *state.Paused, &state.PauseState, nil
 }
 
 // Pause pauses the Deacon by creating the pause file.
@@ -72,7 +88,7 @@ func Pause(townRoot, reason, pausedBy string) error {
 		return err
 	}
 
-	return os.WriteFile(pauseFile, data, 0600)
+	return atomicfile.WriteFile(pauseFile, data, 0600)
 }
 
 // Resume resumes the Deacon by removing the pause file.

@@ -237,8 +237,8 @@ func TestCheckpointWorktreeExcludesNestedRuntimeArtifacts(t *testing.T) {
 	}
 
 	d := &Daemon{logger: log.New(io.Discard, "", 0)}
-	if !d.checkpointWorktree(workDir, "rig", "polecat") {
-		t.Fatal("checkpointWorktree did not create a checkpoint commit")
+	if created, err := d.checkpointWorktree(workDir, "rig", "polecat"); err != nil || !created {
+		t.Fatalf("checkpointWorktree did not create a checkpoint commit: %v", err)
 	}
 
 	if got := strings.TrimSpace(mustRunGit(t, workDir, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")); got != "src/app.go" {
@@ -273,8 +273,8 @@ func TestCheckpointWorktreeSkipsRuntimeOnlyNestedArtifacts(t *testing.T) {
 	}
 
 	d := &Daemon{logger: log.New(io.Discard, "", 0)}
-	if d.checkpointWorktree(workDir, "rig", "polecat") {
-		t.Fatal("checkpointWorktree created a checkpoint for runtime-only changes")
+	if created, err := d.checkpointWorktree(workDir, "rig", "polecat"); err != nil || created {
+		t.Fatalf("runtime-only checkpoint: created=%t error=%v", created, err)
 	}
 	if after := mustRunGit(t, workDir, "rev-parse", "HEAD"); after != before {
 		t.Fatalf("checkpointWorktree advanced HEAD to %s, want %s", after, before)

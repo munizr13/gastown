@@ -81,7 +81,7 @@ func jsonlGitBackupInterval(config *DaemonPatrolConfig) time.Duration {
 // and commits/pushes to a git repository.
 // Non-fatal: errors are logged but don't stop the daemon.
 func (d *Daemon) syncJsonlGitBackup() {
-	if !d.isPatrolActive("jsonl_git_backup") {
+	if !d.canRunPatrol("jsonl_git_backup") {
 		return
 	}
 
@@ -155,7 +155,11 @@ func (d *Daemon) syncJsonlGitBackup() {
 		return
 	}
 
-	mol.closeStep("export")
+	if len(failed) > 0 {
+		mol.failStep("export", fmt.Sprintf("exported %d/%d databases; failed: %s", exported, len(databases), strings.Join(failed, ", ")))
+	} else {
+		mol.closeStep("export", fmt.Sprintf("export returned: databases=%d", exported))
+	}
 
 	// Phase D: Pollution firewall — filter test data from exports.
 	removed := d.applyPollutionFilter(gitRepo, databases)
@@ -166,12 +170,17 @@ func (d *Daemon) syncJsonlGitBackup() {
 	}
 
 	// Post-scrub verification: re-scan output for any remaining pollution.
-	if remaining := d.verifyNoPollution(gitRepo, databases); remaining > 0 {
+	remaining, verifyErr := d.verifyNoPollution(gitRepo, databases)
+	if verifyErr != nil {
+		d.logger.Printf("jsonl_git_backup: cannot verify exports: %v", verifyErr)
+		mol.failStep("verify", verifyErr.Error())
+		return
+	}
+	if remaining > 0 {
 		d.logger.Printf("jsonl_git_backup: WARNING: %d suspicious record(s) survived scrub+filter", remaining)
 		d.escalate("jsonl_git_backup", fmt.Sprintf("post-scrub verification found %d suspicious records — review JSONL exports", remaining))
+		mol.failStep("verify", fmt.Sprintf("%d suspicious records remain after filtering", remaining))
 	}
-
-	mol.closeStep("verify")
 
 	// Phase D: Spike detection — compare current counts to previous commit.
 	threshold := spikeThreshold(config)
@@ -180,8 +189,12 @@ func (d *Daemon) syncJsonlGitBackup() {
 		report := formatSpikeReport(spikes)
 		d.logger.Printf("jsonl_git_backup: HALTING — spike detected:\n%s", report)
 		d.escalate("jsonl_git_backup", report)
+		mol.failStep("verify", "export count spike detected")
 		mol.failStep("push", "spike detected")
 		return // Do NOT commit — spike detected.
+	}
+	if remaining == 0 {
+		mol.closeStep("verify", "post-scrub verification returned no suspicious records; export count check returned no spikes")
 	}
 
 	// Commit and push if anything changed.
@@ -200,7 +213,7 @@ func (d *Daemon) syncJsonlGitBackup() {
 		}
 	} else {
 		d.jsonlPushFailures = 0
-		mol.closeStep("push")
+		mol.closeStep("push", "backup helper returned; remote push is conditional on configured remote and staged changes")
 	}
 
 	d.logger.Printf("jsonl_git_backup: exported %d/%d database(s), push=%s", exported, len(databases), pushStatus)
@@ -239,6 +252,7 @@ func (d *Daemon) exportDatabaseToJsonl(db, gitRepo, dataDir string, scrub bool) 
 	}
 
 	total := 0
+	var failedTables []string
 
 	// 1. Export issues table (with scrub filter).
 	var query string
@@ -260,11 +274,15 @@ func (d *Daemon) exportDatabaseToJsonl(db, gitRepo, dataDir string, scrub bool) 
 		if err != nil {
 			// Non-fatal for supplemental tables — log and continue.
 			d.logger.Printf("jsonl_git_backup: %s/%s: export failed (non-fatal): %v", db, table, err)
+			failedTables = append(failedTables, table)
 			continue
 		}
 		total += tn
 	}
 
+	if len(failedTables) > 0 {
+		return total, fmt.Errorf("incomplete backup: supplemental tables failed: %s", strings.Join(failedTables, ", "))
+	}
 	d.logger.Printf("jsonl_git_backup: %s: exported %d records across %d tables", db, total, 1+len(supplementalTables))
 	return total, nil
 }
@@ -327,17 +345,20 @@ func (d *Daemon) exportTableToJsonl(table, query, dir, dataDir string) (int, err
 	}
 
 	var result struct {
-		Rows []json.RawMessage `json:"rows"`
+		Rows *[]json.RawMessage `json:"rows"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		return 0, fmt.Errorf("parsing dolt output: %w", err)
+	}
+	if result.Rows == nil {
+		return 0, fmt.Errorf("dolt output has no rows array; refusing to overwrite %s export", table)
 	}
 
 	outPath := filepath.Join(dir, table+".jsonl")
 	tmpPath := outPath + ".tmp"
 
 	var buf bytes.Buffer
-	for _, row := range result.Rows {
+	for _, row := range *result.Rows {
 		var compact bytes.Buffer
 		if err := json.Compact(&compact, row); err != nil {
 			return 0, fmt.Errorf("compacting JSON row: %w", err)
@@ -354,7 +375,7 @@ func (d *Daemon) exportTableToJsonl(table, query, dir, dataDir string) (int, err
 		return 0, fmt.Errorf("renaming %s: %w", tmpPath, err)
 	}
 
-	return len(result.Rows), nil
+	return len(*result.Rows), nil
 }
 
 // commitAndPushJsonlBackup stages, commits, and pushes JSONL files if changed.
@@ -855,14 +876,14 @@ func (d *Daemon) applyPollutionFilter(gitRepo string, databases []string) int {
 
 // verifyNoPollution re-scans all exported issues.jsonl files for any remaining
 // suspicious records that survived both the SQL scrub and the regex filter.
-// Returns the total number of suspicious records found across all databases.
-func (d *Daemon) verifyNoPollution(gitRepo string, databases []string) int {
+// Unreadable, malformed or truncated files cannot establish a clean result.
+func (d *Daemon) verifyNoPollution(gitRepo string, databases []string) (int, error) {
 	total := 0
 	for _, db := range databases {
 		issuesPath := filepath.Join(gitRepo, db, "issues.jsonl")
 		data, err := os.ReadFile(issuesPath)
 		if err != nil {
-			continue
+			return total, fmt.Errorf("verify %s: %w", db, err)
 		}
 		scanner := bufio.NewScanner(bytes.NewReader(data))
 		scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024)
@@ -873,7 +894,10 @@ func (d *Daemon) verifyNoPollution(gitRepo string, databases []string) int {
 			}
 			var record map[string]interface{}
 			if err := json.Unmarshal(line, &record); err != nil {
-				continue
+				return total, fmt.Errorf("verify %s record: %w", db, err)
+			}
+			if record == nil {
+				return total, fmt.Errorf("verify %s: null record", db)
 			}
 			if isTestPollution(record) {
 				id, _ := record["id"].(string)
@@ -882,8 +906,11 @@ func (d *Daemon) verifyNoPollution(gitRepo string, databases []string) int {
 				total++
 			}
 		}
+		if err := scanner.Err(); err != nil {
+			return total, fmt.Errorf("verify %s scan: %w", db, err)
+		}
 	}
-	return total
+	return total, nil
 }
 
 // parseLineCount parses a line count from `wc -l` style output or plain integer.
