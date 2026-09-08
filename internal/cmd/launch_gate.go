@@ -187,7 +187,7 @@ func enforceFromScratchLaunchGateForTarget(townRoot, target, beadID string, info
 	return enforceFromScratchLaunchGate(townRoot, rigName, beadID, info, opts)
 }
 
-func evaluateFromScratchLaunchGate(townRoot, rigName, beadID string, info *beadInfo, opts launchGateDispatchOptions) (*launchGateEvaluation, error) {
+func evaluateFromScratchLaunchGate(townRoot, rigName, _ string, info *beadInfo, opts launchGateDispatchOptions) (*launchGateEvaluation, error) {
 	repoRoot, markerPath, found := findLaunchGateMarker(townRoot, rigName)
 	eval := &launchGateEvaluation{
 		RigName:    rigName,
@@ -555,7 +555,7 @@ func isAllowDecision(value string) bool {
 
 // firstNonEmpty lives in mq_pr_status.go — upstream adopted an identical
 // implementation during the 2026-08 rebase, so ours was removed rather than
-// renamed. Same package, same behaviour.
+// renamed. Same package, same behavior.
 
 func launchGateUniqueStrings(values []string) []string {
 	seen := map[string]bool{}

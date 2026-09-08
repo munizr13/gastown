@@ -292,7 +292,7 @@ esac
 	for _, want := range []string{
 		"scan --reason completed: daemon reported step finished",
 		"reap --reason failed: database unavailable",
-		"unrun-purge --reason cancelled: no execution receipt",
+		"unrun-purge --reason canceled: no execution receipt",
 		"root --reason retired: daemon tracking ended; root closure does not prove step execution",
 	} {
 		if !strings.Contains(string(data), want) {
@@ -384,7 +384,7 @@ func TestDogMoleculeCancelsBlockedAndDeferredSteps(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, step := range []string{"blocked-step", "deferred-step"} {
-		if !strings.Contains(string(data), step+" --reason cancelled: no execution receipt") {
+		if !strings.Contains(string(data), step+" --reason canceled: no execution receipt") {
 			t.Fatalf("missing explicit cancellation for %s: %s", step, data)
 		}
 	}

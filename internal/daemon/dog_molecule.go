@@ -143,7 +143,7 @@ func (dm *dogMol) failStep(stepSlug, reason string) {
 }
 
 // close retires the daemon tracking envelope. Unreported steps are explicitly
-// cancelled, never reported as executed. A root closure is lifecycle cleanup;
+// canceled, never reported as executed. A root closure is lifecycle cleanup;
 // operation evidence belongs to explicit step receipts, including failures.
 func (dm *dogMol) close() {
 	if dm.rootID == "" {
@@ -213,7 +213,7 @@ func (dm *dogMol) closeRemainingSteps() error {
 	for pass := 0; pass < len(children)+1 && len(remaining) > 0; pass++ {
 		var next []childInfo
 		for _, child := range remaining {
-			if err := dm.closeWisp(child.ID, "--reason", "cancelled: no execution receipt; daemon tracking ended"); err != nil {
+			if err := dm.closeWisp(child.ID, "--reason", "canceled: no execution receipt; daemon tracking ended"); err != nil {
 				next = append(next, child)
 			} else {
 				closed++
@@ -231,7 +231,7 @@ func (dm *dogMol) closeRemainingSteps() error {
 	// wisps; force only cancels their tracking and never asserts execution.
 	var failed []string
 	for _, child := range remaining {
-		if err := dm.closeWisp(child.ID, "--force", "--reason", "cancelled: no execution receipt; daemon tracking ended"); err != nil {
+		if err := dm.closeWisp(child.ID, "--force", "--reason", "canceled: no execution receipt; daemon tracking ended"); err != nil {
 			dm.logger.Printf("dog_molecule: closeRemainingSteps: force-close %s failed after %d attempts: %v", child.ID, dogCloseMaxAttempts, err)
 			failed = append(failed, child.ID)
 		} else {

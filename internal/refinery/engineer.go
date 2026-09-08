@@ -1703,7 +1703,7 @@ func (e *Engineer) closeMRWithReason(mr *MRInfo, closeReason string, mergeCommit
 	// MR beads are created Ephemeral, which routes them to the wisps table
 	// (GH#2446) — and wisps are compacted away. On 2026-08-01 an MR bead
 	// carrying a witness review, a refinery hold and the rulings that
-	// authorised the merge was readable 39 minutes after the merge and gone
+	// authorized the merge was readable 39 minutes after the merge and gone
 	// after that, so "why was this merged?" became unanswerable. The source
 	// issue is durable, so the record is copied there while it still exists.
 	//
